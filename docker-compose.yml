@@ -1,0 +1,70 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kino2_web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - TMDB_API_KEY=${TMDB_API_KEY:-}
+      - TMDB_BASE_URL=${TMDB_BASE_URL:-https://api.themoviedb.org/3}
+      - TMDB_IMAGE_BASE_URL=${TMDB_IMAGE_BASE_URL:-https://image.tmdb.org/t/p}
+      - JACKETT_URL=http://jackett:9117
+      - JACKETT_API_KEY=${JACKETT_API_KEY:-}
+      - TORRSERVER_URL=http://torrserver:8090
+      - NEXT_PUBLIC_TORRSERVER_URL=${NEXT_PUBLIC_TORRSERVER_URL:-http://localhost:8090}
+      - JWT_SECRET=${JWT_SECRET:-kinostream_jwt_secret_prod_key}
+    volumes:
+      - kino_data:/app/data
+    depends_on:
+      - torrserver
+      - jackett
+    extra_hosts:
+      - "api.themoviedb.org:3.170.103.59"
+      - "image.tmdb.org:185.93.1.244"
+    networks:
+      - kino_net
+
+  torrserver:
+    image: ghcr.io/yourok/torrserver:latest
+    container_name: kino2_torrserver
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - torrserver_data:/opt/ts/torrents
+    environment:
+      - TS_PORT=8090
+      - TS_DONTKILL=1
+    networks:
+      - kino_net
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: kino2_jackett
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - AUTO_UPDATE=true
+    ports:
+      - "9117:9117"
+    volumes:
+      - jackett_config:/config
+      - jackett_downloads:/downloads
+    networks:
+      - kino_net
+
+volumes:
+  kino_data:
+  torrserver_data:
+  jackett_config:
+  jackett_downloads:
+
+networks:
+  kino_net:
+    driver: bridge
