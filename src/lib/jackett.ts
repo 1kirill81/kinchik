@@ -10,10 +10,11 @@ interface ParseResult {
   codec?: string;
   audio?: string;
   ripType?: string;
+  isBrowserNative: boolean;
 }
 
 /**
- * Intelligent regex parser to extract quality, audio dubbing, rip type and codec from torrent title
+ * Intelligent regex parser to extract quality, audio dubbing, rip type, codec and browser compatibility from torrent title
  */
 export function parseTorrentTitle(title: string): ParseResult {
   const t = title.toLowerCase();
@@ -84,7 +85,22 @@ export function parseTorrentTitle(title: string): ParseResult {
     ripType = 'CAMRip';
   }
 
-  return { quality, codec, audio, ripType };
+  // 5. Browser Compatibility Check
+  // Incompatible video: HEVC, XviD, DivX, AV1, DVD/VOB
+  const hasIncompatibleVideo = /hevc|h\.?265|x265|xvid|divx|av1|vc-?1|mpeg-?2|dvdrip|dvdr|vob/i.test(title);
+  // Incompatible heavy audio: DTS, TrueHD, FLAC, Atmos
+  const hasIncompatibleAudio = /dts(-hd)?|truehd|flac|lpcm|atmos/i.test(title);
+  // Uncompressed or raw Blu-Ray remuxes are usually MKV with AC3/DTS
+  const isRemuxOrDisc = /\bremux\b|bluray|blu-ray|bdmv/i.test(title);
+
+  // Compatible video: explicitly AVC / H.264 / x264, MP4, or WEB-DL / WEBRip / HDTV
+  const hasCompatibleVideo =
+    /avc|h\.?264|x264|mp4\b/i.test(title) || /web-?dl|web-?rip|hdtv/i.test(title);
+
+  const isBrowserNative =
+    hasCompatibleVideo && !hasIncompatibleVideo && !hasIncompatibleAudio && !isRemuxOrDisc;
+
+  return { quality, codec, audio, ripType, isBrowserNative };
 }
 
 export const jackett = {
@@ -142,7 +158,7 @@ export const jackett = {
         const publishDate = item.PublishDate || item.pubDate || new Date().toISOString();
         const indexer = item.Tracker || item.indexer || 'Indexer';
 
-        const { quality, codec, audio, ripType } = parseTorrentTitle(title);
+        const { quality, codec, audio, ripType, isBrowserNative } = parseTorrentTitle(title);
 
         return {
           id: `${indexer}-${idx}-${Date.now()}`,
@@ -160,6 +176,7 @@ export const jackett = {
           codec,
           audio,
           ripType,
+          isBrowserNative,
         };
       });
 

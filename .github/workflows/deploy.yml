@@ -54,8 +54,11 @@ jobs:
             set -e
             echo "🚀 Начинаем деплой Kinostream на сервере..."
 
-            # Директория проекта на сервере (создается при первой настройке)
-            TARGET_DIR="/opt/kino2"
+            # Директория проекта на сервере
+            TARGET_DIR="/opt/kino2/kinchik"
+            if [ ! -d "$TARGET_DIR" ]; then
+              TARGET_DIR="/opt/kino2"
+            fi
             if [ ! -d "$TARGET_DIR" ]; then
               TARGET_DIR="$HOME/kino2"
             fi

@@ -13,6 +13,8 @@ import {
   Radio,
   FileVideo,
   CheckCircle2,
+  Zap,
+  Sparkles,
 } from 'lucide-react';
 import { TorrentItem, VideoQuality } from '@/types/torrent';
 
@@ -143,6 +145,9 @@ export default function TorrentModal({
 
       setPrepareStep('Запуск буфера и открытие плеера...');
 
+      // Auto-detect if stream needs remuxing for smooth playback in browser
+      const needRemux = !torrent.isBrowserNative;
+
       // Redirect to full-featured watch cinema page
       const watchUrl = `/watch?hash=${encodeURIComponent(data.hash)}&index=${data.fileIndex}&title=${encodeURIComponent(
         mediaTitle + (season && episode ? ` S${season}E${episode}` : '')
@@ -150,7 +155,9 @@ export default function TorrentModal({
         mediaId ? `&mediaId=${mediaId}` : ''
       }${mediaType ? `&mediaType=${mediaType}` : ''}${
         season ? `&season=${season}` : ''
-      }${episode ? `&episode=${episode}` : ''}`;
+      }${episode ? `&episode=${episode}` : ''}${
+        needRemux ? '&remux=1' : ''
+      }`;
 
       router.push(watchUrl);
     } catch (err: any) {
@@ -162,6 +169,7 @@ export default function TorrentModal({
   if (!isOpen) return null;
 
   const filteredTorrents = torrents.filter((item) => {
+    if (selectedQuality === 'browser') return item.isBrowserNative;
     if (selectedQuality === 'all') return true;
     return item.quality === selectedQuality;
   });
@@ -225,8 +233,32 @@ export default function TorrentModal({
 
           {/* Quality tabs */}
           <div className="flex items-center gap-2 overflow-x-auto pb-1 text-xs">
-            <span className="text-zinc-500 font-medium">Качество:</span>
-            {['all', '4K', '1080p', '720p'].map((q) => (
+            <span className="text-zinc-500 font-medium">Фильтр:</span>
+            <button
+              onClick={() => setSelectedQuality('all')}
+              className={`px-3 py-1 rounded-lg font-semibold transition-colors ${
+                selectedQuality === 'all'
+                  ? 'bg-primary text-white shadow-glow-primary'
+                  : 'bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              Все
+            </button>
+
+            {/* Quick 1-click filter for native browser-compatible torrents */}
+            <button
+              onClick={() => setSelectedQuality(selectedQuality === 'browser' ? 'all' : 'browser')}
+              className={`px-3 py-1 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                selectedQuality === 'browser'
+                  ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30 ring-1 ring-emerald-400'
+                  : 'bg-emerald-950/40 text-emerald-400 hover:bg-emerald-900/40 border border-emerald-500/30'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              <span>Для браузера (H.264)</span>
+            </button>
+
+            {['4K', '1080p', '720p'].map((q) => (
               <button
                 key={q}
                 onClick={() => setSelectedQuality(q)}
@@ -236,7 +268,7 @@ export default function TorrentModal({
                     : 'bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white'
                 }`}
               >
-                {q === 'all' ? 'Все' : q}
+                {q}
               </button>
             ))}
             <span className="ml-auto text-zinc-500">
@@ -358,6 +390,22 @@ export default function TorrentModal({
 
                   {/* Badges row */}
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    {/* Browser Compatibility Badge */}
+                    {torrent.isBrowserNative ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[10px] shadow-sm">
+                        <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
+                        Браузер 100%
+                      </span>
+                    ) : (
+                      <span
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300/90 font-medium border border-amber-500/25 text-[10px]"
+                        title="Раздача в MKV/HEVC/AC3. Запустится автоматически через Ремукс (MP4)"
+                      >
+                        <Sparkles className="w-3 h-3 text-amber-400" />
+                        Режим MP4 (авто)
+                      </span>
+                    )}
+
                     {/* Quality */}
                     <span
                       className={`px-2 py-0.5 rounded font-bold ${

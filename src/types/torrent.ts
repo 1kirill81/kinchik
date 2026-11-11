@@ -16,6 +16,7 @@ export interface TorrentItem {
   codec?: string; // HEVC, x264, etc.
   audio?: string; // Dub, Rus, Eng, etc.
   ripType?: string; // BDRip, WEB-DL, etc.
+  isBrowserNative?: boolean; // True if H.264 / WEB-DL with AAC that plays natively in browser
 }
 
 export interface ParsedEpisodeFile {

@@ -105,7 +105,10 @@ export default function WatchClient() {
   const hash = searchParams.get('hash') || '';
   const initialIndex = parseInt(searchParams.get('index') || '1', 10);
   const rawTitle = searchParams.get('title') || 'Видеопоток';
-  const initialStreamUrl = searchParams.get('streamUrl') || '';
+  const initialRemux = searchParams.get('remux') === '1';
+  const initialStreamUrl = initialRemux
+    ? `/api/stream/remux?link=${hash}&index=${initialIndex}&title=${encodeURIComponent(rawTitle)}`
+    : searchParams.get('streamUrl') || '';
   const poster = searchParams.get('poster') || '';
   const mediaId = searchParams.get('mediaId') || '';
   const mediaType = searchParams.get('mediaType') || '';
@@ -115,7 +118,7 @@ export default function WatchClient() {
   const [torrentData, setTorrentData] = useState<TorrServerTorrent | null>(null);
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [useProxy, setUseProxy] = useState(false);
-  const [isRemux, setIsRemux] = useState(false);
+  const [isRemux, setIsRemux] = useState(initialRemux);
   const [copiedTop, setCopiedTop] = useState(false);
 
   // Active season tab for series
