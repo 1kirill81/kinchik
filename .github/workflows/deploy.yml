@@ -69,8 +69,7 @@ jobs:
             git pull origin main || git pull origin master
 
             echo "🐳 Пересборка и запуск Docker контейнеров..."
-            docker compose down --remove-orphans || true
-            docker compose up -d --build
+            docker compose up -d --build --remove-orphans
 
             echo "🧹 Очистка старых неиспользуемых Docker слоев..."
             docker image prune -f
