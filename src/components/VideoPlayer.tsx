@@ -219,6 +219,11 @@ export default function VideoPlayer({
       });
 
       art.on('video:error', () => {
+        if (!isRemux && onToggleRemux) {
+          console.warn('Direct stream failed, auto-switching to Remux mode...');
+          onToggleRemux();
+          return;
+        }
         setPlayerError('Ошибка декодирования видео в браузере. Возможно, данный кодек не поддерживается вашим браузером.');
       });
 

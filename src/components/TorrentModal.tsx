@@ -145,8 +145,8 @@ export default function TorrentModal({
 
       setPrepareStep('Запуск буфера и открытие плеера...');
 
-      // Auto-detect if stream needs remuxing for smooth playback in browser
-      const needRemux = !torrent.isBrowserNative;
+      // Always launch in browser-compatible Remux mode for 100% reliable audio & video
+      const needRemux = true;
 
       // Redirect to full-featured watch cinema page
       const watchUrl = `/watch?hash=${encodeURIComponent(data.hash)}&index=${data.fileIndex}&title=${encodeURIComponent(
@@ -394,15 +394,15 @@ export default function TorrentModal({
                     {torrent.isBrowserNative ? (
                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30 text-[10px] shadow-sm">
                         <Zap className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-                        Браузер 100%
+                        H.264 (Легкий поток)
                       </span>
                     ) : (
                       <span
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300/90 font-medium border border-amber-500/25 text-[10px]"
-                        title="Раздача в MKV/HEVC/AC3. Запустится автоматически через Ремукс (MP4)"
+                        title="Раздача в MKV/HEVC/AC3"
                       >
                         <Sparkles className="w-3 h-3 text-amber-400" />
-                        Режим MP4 (авто)
+                        Режим MP4
                       </span>
                     )}
 
