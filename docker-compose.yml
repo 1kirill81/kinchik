@@ -1,3 +1,5 @@
+name: kino2
+
 services:
   web:
     build:
