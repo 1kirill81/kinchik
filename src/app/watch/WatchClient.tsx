@@ -454,43 +454,69 @@ export default function WatchClient() {
     audioTracks.find((t) => t.index === selectedAudioIndex) || audioTracks[0] || null;
 
   return (
-    <div className="min-h-screen bg-black text-zinc-100 pb-20">
+    <div className="min-h-screen bg-black text-zinc-100 pb-16 sm:pb-20">
       {/* Top Cinema Navbar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-wrap items-center justify-between gap-3 border-b border-white/5">
-        <button
-          onClick={() => router.back()}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface border border-white/10 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
-        >
-          <ArrowLeft className="w-4 h-4" /> Назад
-        </button>
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-3 sm:py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 lg:gap-3 border-b border-white/5">
+        <div className="flex items-center justify-between gap-2 w-full lg:w-auto lg:flex-1 min-w-0">
+          <button
+            onClick={() => router.back()}
+            className="inline-flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-surface border border-white/10 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span className="hidden sm:inline">Назад</span>
+          </button>
 
-        <div className="text-center truncate px-4 flex-1 min-w-[200px]">
-          <h1 className="text-sm sm:text-base font-bold text-white truncate max-w-lg mx-auto">
-            {rawTitle}
-          </h1>
-          <p className="text-[11px] text-zinc-400 flex items-center justify-center gap-1.5 mt-0.5">
-            <Radio className="w-3 h-3 text-emerald-400 animate-pulse" />
-            {currentEpisodeInfo
-              ? `Сезон ${currentEpisodeInfo.season} • Серия ${currentEpisodeInfo.episode}: ${currentEpisodeInfo.title}`
-              : `Файл #${currentIndex} в раздаче`}
-          </p>
+          <div className="text-center truncate px-2 flex-1 min-w-0">
+            <h1 className="text-xs sm:text-base font-bold text-white truncate max-w-lg mx-auto">
+              {rawTitle}
+            </h1>
+            <p className="text-[10px] sm:text-[11px] text-zinc-400 flex items-center justify-center gap-1.5 mt-0.5 truncate">
+              <Radio className="w-3 h-3 text-emerald-400 animate-pulse flex-shrink-0" />
+              <span className="truncate">
+                {currentEpisodeInfo
+                  ? `Сезон ${currentEpisodeInfo.season} • Серия ${currentEpisodeInfo.episode}: ${currentEpisodeInfo.title}`
+                  : `Файл #${currentIndex} в раздаче`}
+              </span>
+            </p>
+          </div>
+
+          {mediaId ? (
+            <div className="lg:hidden flex-shrink-0">
+              <FavoriteButton
+                item={{
+                  id: parseInt(mediaId, 10),
+                  mediaType: (mediaType as 'movie' | 'tv') || 'tv',
+                  title: rawTitle,
+                  poster_path: poster || null,
+                  backdrop_path: null,
+                  vote_average: 0,
+                }}
+                showLabel={false}
+                className="p-1.5"
+              />
+            </div>
+          ) : (
+            <div className="w-8 lg:hidden" />
+          )}
         </div>
 
         {/* Top Controls: Audio Track, Mode Switcher, VLC Helpers & Favorite Button */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 w-full lg:w-auto">
           {mediaId && (
-            <FavoriteButton
-              item={{
-                id: parseInt(mediaId, 10),
-                mediaType: (mediaType as 'movie' | 'tv') || 'tv',
-                title: rawTitle,
-                poster_path: poster || null,
-                backdrop_path: null,
-                vote_average: 0,
-              }}
-              showLabel={false}
-              className="p-1.5"
-            />
+            <div className="hidden lg:block">
+              <FavoriteButton
+                item={{
+                  id: parseInt(mediaId, 10),
+                  mediaType: (mediaType as 'movie' | 'tv') || 'tv',
+                  title: rawTitle,
+                  poster_path: poster || null,
+                  backdrop_path: null,
+                  vote_average: 0,
+                }}
+                showLabel={false}
+                className="p-1.5"
+              />
+            </div>
           )}
 
           {/* Audio Track / Voiceover Switcher */}
@@ -498,7 +524,7 @@ export default function WatchClient() {
             <div ref={audioMenuRef} className="relative">
               <button
                 onClick={() => setIsAudioMenuOpen(!isAudioMenuOpen)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface hover:bg-white/10 border border-white/10 text-xs font-medium text-zinc-200 transition-colors max-w-[210px]"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface hover:bg-white/10 border border-white/10 text-[11px] sm:text-xs font-medium text-zinc-200 transition-colors max-w-[165px] sm:max-w-[210px]"
                 title="Сменить озвучку / аудиодорожку"
               >
                 <Languages className="w-3.5 h-3.5 text-primary flex-shrink-0" />
@@ -509,7 +535,7 @@ export default function WatchClient() {
               </button>
 
               {isAudioMenuOpen && (
-                <div className="absolute right-0 top-full mt-2 w-72 bg-zinc-950/95 backdrop-blur-xl border border-white/15 rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-white/5">
+                <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-[min(18rem,calc(100vw-1.5rem))] bg-zinc-950/95 backdrop-blur-xl border border-white/15 rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-white/5">
                   <div className="px-3 py-2 bg-white/5 flex items-center justify-between">
                     <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
                       <Volume2 className="w-3.5 h-3.5 text-primary" /> Выбор озвучки ({audioTracks.length})
@@ -545,10 +571,10 @@ export default function WatchClient() {
           )}
 
           {/* Mode Switcher: Direct P2P vs MP4 Remux */}
-          <div className="flex items-center rounded-lg bg-surface border border-white/10 p-0.5 text-xs">
+          <div className="flex items-center rounded-lg bg-surface border border-white/10 p-0.5 text-[11px] sm:text-xs ml-auto sm:ml-0">
             <button
               onClick={() => handleToggleRemuxMode(false)}
-              className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
+              className={`px-2 sm:px-2.5 py-1 rounded-md font-medium transition-colors whitespace-nowrap ${
                 !isRemux ? 'bg-primary text-white shadow-glow-primary' : 'text-zinc-400 hover:text-white'
               }`}
               title="Прямой поток из торрента"
@@ -557,7 +583,7 @@ export default function WatchClient() {
             </button>
             <button
               onClick={() => handleToggleRemuxMode(true)}
-              className={`px-2.5 py-1 rounded-md font-medium flex items-center gap-1 transition-colors ${
+              className={`px-2 sm:px-2.5 py-1 rounded-md font-medium flex items-center gap-1 transition-colors whitespace-nowrap ${
                 isRemux ? 'bg-primary text-white shadow-glow-primary' : 'text-zinc-400 hover:text-white'
               }`}
               title="Режим MP4 совместимости (для MKV/AC3)"
@@ -570,7 +596,7 @@ export default function WatchClient() {
           <a
             href={`/api/stream/playlist?link=${encodeURIComponent(hash)}&index=${currentIndex}&title=${encodeURIComponent(rawTitle)}`}
             download
-            className="px-2.5 py-1.5 rounded-lg text-xs font-medium border bg-white/5 border-white/10 text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-1 transition-colors"
+            className="px-2 sm:px-2.5 py-1.5 rounded-lg text-[11px] sm:text-xs font-medium border bg-white/5 border-white/10 text-zinc-300 hover:text-white hover:bg-white/10 flex items-center gap-1 transition-colors flex-shrink-0"
             title="Скачать .m3u плейлист для VLC"
           >
             <Download className="w-3.5 h-3.5 text-emerald-400" />
@@ -580,7 +606,7 @@ export default function WatchClient() {
       </div>
 
       {/* Main Video Arena */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-3 sm:pt-4">
         {/* Video Player */}
         <div className="w-full">
           <VideoPlayer
@@ -608,17 +634,8 @@ export default function WatchClient() {
 
         {/* Next / Previous Quick Controls Bar */}
         {parsedEpisodes.length > 1 && (
-          <div className="mt-4 p-3 rounded-xl bg-surface border border-white/10 flex items-center justify-between gap-4">
-            <button
-              onClick={() => prevEpisode && setCurrentIndex(prevEpisode.id)}
-              disabled={!prevEpisode}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/5 text-xs font-medium text-zinc-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <ChevronLeft className="w-4 h-4" />
-              Предыдущая серия
-            </button>
-
-            <div className="text-center text-xs font-semibold text-zinc-200 truncate">
+          <div className="mt-3 sm:mt-4 p-2.5 sm:p-3 rounded-xl bg-surface border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4">
+            <div className="text-center text-xs font-semibold text-zinc-200 truncate sm:order-2 px-1">
               {currentEpisodeInfo ? (
                 <span>
                   Сезон {currentEpisodeInfo.season}, Серия {currentEpisodeInfo.episode}:{' '}
@@ -629,40 +646,51 @@ export default function WatchClient() {
               )}
             </div>
 
-            <button
-              onClick={() => nextEpisode && setCurrentIndex(nextEpisode.id)}
-              disabled={!nextEpisode}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold shadow-glow-primary transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Следующая серия
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            <div className="grid grid-cols-2 sm:contents gap-2">
+              <button
+                onClick={() => prevEpisode && setCurrentIndex(prevEpisode.id)}
+                disabled={!prevEpisode}
+                className="sm:order-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg bg-white/5 border border-white/5 text-xs font-medium text-zinc-300 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <ChevronLeft className="w-4 h-4 flex-shrink-0" />
+                <span className="truncate">Предыдущая</span>
+              </button>
+
+              <button
+                onClick={() => nextEpisode && setCurrentIndex(nextEpisode.id)}
+                disabled={!nextEpisode}
+                className="sm:order-3 inline-flex items-center justify-center gap-1.5 px-3 py-2 sm:py-1.5 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold shadow-glow-primary transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <span className="truncate">Следующая</span>
+                <ChevronRight className="w-4 h-4 flex-shrink-0" />
+              </button>
+            </div>
           </div>
         )}
 
         {/* Season & Episode Selector Navigation Panel */}
         {parsedEpisodes.length > 1 && (
-          <div className="mt-8 p-6 rounded-2xl bg-surface border border-white/10 space-y-6">
-            <div className="flex items-center justify-between">
+          <div className="mt-5 sm:mt-8 p-4 sm:p-6 rounded-2xl bg-surface border border-white/10 space-y-4 sm:space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Tv className="w-5 h-5 text-primary" />
-                <h3 className="text-base font-bold text-white">Выбор сезона и серии</h3>
+                <h3 className="text-sm sm:text-base font-bold text-white">Выбор сезона и серии</h3>
               </div>
               <span className="text-xs text-zinc-400">
-                Всего серий в раздаче: <b className="text-white">{parsedEpisodes.length}</b>
+                Всего серий: <b className="text-white">{parsedEpisodes.length}</b>
               </span>
             </div>
 
             {/* Season Tabs (e.g. Сезон 1, Сезон 2 ... Сезон 15) */}
             {availableSeasons.length > 1 && (
-              <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-none">
+              <div className="flex items-center gap-2 overflow-x-auto pb-2 pt-0.5 scrollbar-none">
                 {availableSeasons.map((s) => (
                   <button
                     key={s}
                     onClick={() => setActiveSeason(s)}
-                    className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
+                    className={`px-3.5 sm:px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap flex-shrink-0 transition-all ${
                       activeSeason === s
-                        ? 'bg-primary text-white shadow-glow-primary scale-105'
+                        ? 'bg-primary text-white shadow-glow-primary'
                         : 'bg-cinema-card border border-white/5 text-zinc-400 hover:text-white hover:bg-white/10'
                     }`}
                   >
@@ -673,7 +701,7 @@ export default function WatchClient() {
             )}
 
             {/* Episode Grid for active season */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-96 overflow-y-auto pr-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-3 max-h-96 overflow-y-auto pr-1">
               {(seasonsMap.get(activeSeason) || parsedEpisodes).map((ep) => {
                 const isPlaying = ep.id === currentIndex;
                 return (
@@ -700,7 +728,7 @@ export default function WatchClient() {
                           {ep.title}
                         </span>
                         {isPlaying && (
-                          <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-0.5">
+                          <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-0.5 flex-shrink-0">
                             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
                             Играет
                           </span>
@@ -720,14 +748,14 @@ export default function WatchClient() {
         )}
 
         {/* Streaming Hints & Tips */}
-        <div className="mt-6 p-4 rounded-xl bg-surface/50 border border-white/5 text-xs text-zinc-400 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <Radio className="w-4 h-4 text-emerald-400" />
+        <div className="mt-5 sm:mt-6 p-3.5 sm:p-4 rounded-xl bg-surface/50 border border-white/5 text-xs text-zinc-400 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-2">
+            <Radio className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5 sm:mt-0" />
             <span>
               Поток читается последовательно без записи на диск. При переключении серии плеер мгновенно подхватывает новый файл.
             </span>
           </div>
-          <div className="text-[11px] text-zinc-500">
+          <div className="text-[11px] text-zinc-500 hidden md:block flex-shrink-0">
             Горячие клавиши: <kbd className="px-1.5 py-0.5 rounded bg-zinc-800">Пробел</kbd> пауза,{' '}
             <kbd className="px-1.5 py-0.5 rounded bg-zinc-800">← / →</kbd> 5 сек,{' '}
             <kbd className="px-1.5 py-0.5 rounded bg-zinc-800">F</kbd> на весь экран

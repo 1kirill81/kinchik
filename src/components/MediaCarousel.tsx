@@ -28,16 +28,16 @@ export default function MediaCarousel({ title, items, icon }: MediaCarouselProps
   if (!items || items.length === 0) return null;
 
   return (
-    <section className="relative my-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <section className="relative my-6 sm:my-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2.5">
-          {icon && <span className="text-primary">{icon}</span>}
-          <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">{title}</h2>
+      <div className="flex items-center justify-between gap-2 mb-3 sm:mb-4">
+        <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+          {icon && <span className="text-primary flex-shrink-0">{icon}</span>}
+          <h2 className="text-lg sm:text-2xl font-bold text-white tracking-tight truncate">{title}</h2>
         </div>
 
-        {/* Navigation Arrows */}
-        <div className="flex items-center gap-2">
+        {/* Navigation Arrows (touch-scrollable directly on phones) */}
+        <div className="hidden sm:flex items-center gap-2 flex-shrink-0">
           <button
             onClick={() => scroll('left')}
             className="p-2 rounded-xl bg-surface border border-white/10 text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
@@ -58,7 +58,7 @@ export default function MediaCarousel({ title, items, icon }: MediaCarouselProps
       {/* Scrollable container */}
       <div
         ref={scrollRef}
-        className="flex items-center gap-4 overflow-x-auto scrollbar-none py-2 px-1 scroll-smooth"
+        className="flex items-center gap-3 sm:gap-4 overflow-x-auto scrollbar-none py-1.5 sm:py-2 -mx-4 px-4 sm:mx-0 sm:px-1 scroll-smooth"
         style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
       >
         {items.map((item) => (

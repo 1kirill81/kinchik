@@ -30,23 +30,23 @@ export default function ContinueWatchingShelf() {
   if (items.length === 0) return null;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-primary" />
-          <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6">
+      <div className="flex items-center justify-between gap-2 mb-3 sm:mb-4">
+        <div className="flex items-center gap-2 min-w-0">
+          <Clock className="w-5 h-5 text-primary flex-shrink-0" />
+          <h2 className="text-lg sm:text-2xl font-black text-white tracking-tight truncate">
             Продолжить просмотр
           </h2>
         </div>
         <Link
           href="/favorites"
-          className="text-xs font-semibold text-zinc-400 hover:text-white flex items-center gap-1 transition-colors"
+          className="text-xs font-semibold text-zinc-400 hover:text-white flex items-center gap-1 transition-colors flex-shrink-0"
         >
-          Моё избранное <ChevronRight className="w-4 h-4" />
+          Избранное <ChevronRight className="w-4 h-4" />
         </Link>
       </div>
 
-      <div className="flex gap-4 overflow-x-auto pb-4 pt-1 scrollbar-none">
+      <div className="flex gap-3 sm:gap-4 overflow-x-auto pb-4 pt-1 -mx-4 px-4 sm:mx-0 sm:px-0 scrollbar-none">
         {items.map((item) => {
           const isTv = item.mediaType === 'tv' || Boolean(item.season || item.episode);
           const resumeUrl = `/watch?hash=${encodeURIComponent(item.hash)}&index=${item.fileIndex}&title=${encodeURIComponent(
@@ -60,7 +60,7 @@ export default function ContinueWatchingShelf() {
           return (
             <div
               key={`${item.hash}-${item.fileIndex}`}
-              className="group relative flex-shrink-0 w-60 sm:w-72 rounded-2xl bg-cinema-card border border-white/5 hover:border-primary/40 transition-all duration-300 overflow-hidden shadow-lg flex flex-col justify-between"
+              className="group relative flex-shrink-0 w-56 sm:w-72 rounded-2xl bg-cinema-card border border-white/5 hover:border-primary/40 transition-all duration-300 overflow-hidden shadow-lg flex flex-col justify-between"
             >
               {/* Top thumbnail/poster */}
               <div className="relative aspect-video w-full bg-zinc-900 overflow-hidden">

@@ -10,7 +10,65 @@ interface ParseResult {
   codec?: string;
   audio?: string;
   ripType?: string;
+  languages: string[];
+  hasSubtitles: boolean;
   isBrowserNative: boolean;
+}
+
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
+const searchCache = new Map<string, { items: TorrentItem[]; expiresAt: number }>();
+const inflightSearches = new Map<string, Promise<TorrentItem[]>>();
+
+export function extractTorrentLanguages(title: string, fallbackLangAttr?: string): {
+  languages: string[];
+  hasSubtitles: boolean;
+} {
+  const langs = new Set<string>();
+  const hasSubtitles = /\bsubs?\b|субтитр/i.test(title);
+  const combined = `${title} ${fallbackLangAttr || ''}`;
+
+  // Strip subtitle-only language markers (e.g. "RUS Sub", "ENG Sub") so we don't confuse subtitle lang with audio lang
+  const audioOnlyText = combined
+    .replace(/\b(rus|ru|рус\.?)\s*(sub|subs|суб|субтитр\w*)/gi, '')
+    .replace(/\b(eng|en|анг\.?)\s*(sub|subs|суб|субтитр\w*)/gi, '')
+    .replace(/субтитр\w*\s*[:(\[]?\s*(rus|ru|рус\w*|eng|en)/gi, '');
+
+  const hasRussianStudioOrDub =
+    /дубляж|\bdub\b|дублирован|lostfilm|лостфильм|кубик|kubik|hdrezka|rezka|newstudio|alexfilm|novafilm|пифагор|кравец|kravec|рен-тв|ren-tv|мосфильм|невафильм|rhs|red head sound|jaskier|сыендук|anilibria|coldfilm|baibako|omskbird|гоблин|goblin|многоголос|двухголос|одноголос|закадр|\bmvo\b|\bdvo\b|\bavo\b|\bпмо\b|\bлм\b|\bлд\b|\|\s*[dpm](?:\s|,|$)|\brus\b|\bru\b|русск|(?<![a-z])рус(?![a-z])/i.test(
+      audioOnlyText
+    );
+
+  const isOriginalWithoutDub =
+    /без перевода|оригинал\s*\+\s*суб|original\s*\+?\s*sub/i.test(combined) &&
+    !hasRussianStudioOrDub;
+
+  const hasCyrillic = /[а-яА-ЯёЁ]/.test(title);
+
+  if (hasRussianStudioOrDub || (hasCyrillic && !isOriginalWithoutDub)) {
+    langs.add('RUS');
+  }
+
+  const hasEnglishTag =
+    /\beng\b|\benglish\b|английск|\borig\b|\boriginal\b|оригинал|\bmulti\b|\bdual\b/i.test(
+      audioOnlyText
+    );
+
+  if (hasEnglishTag || (!hasCyrillic && !hasRussianStudioOrDub)) {
+    langs.add('ENG');
+  }
+
+  if (/\bukr\b|укр|ukrainian/i.test(audioOnlyText)) langs.add('UKR');
+  if (/\bjpn\b|\bjap\b|японск/i.test(audioOnlyText)) langs.add('JPN');
+  if (/\bkor\b|корейск/i.test(audioOnlyText)) langs.add('KOR');
+  if (/\bfra\b|\bfre\b|француз/i.test(audioOnlyText)) langs.add('FRA');
+  if (/\bger\b|\bdeu\b|немецк/i.test(audioOnlyText)) langs.add('DEU');
+  if (/\bspa\b|испанск/i.test(audioOnlyText)) langs.add('SPA');
+  if (/\bita\b|итальянск/i.test(audioOnlyText)) langs.add('ITA');
+
+  return {
+    languages: Array.from(langs),
+    hasSubtitles,
+  };
 }
 
 /**
@@ -85,7 +143,10 @@ export function parseTorrentTitle(title: string): ParseResult {
     ripType = 'CAMRip';
   }
 
-  // 5. Browser Compatibility Check
+  // 5. Audio Languages & Subtitles
+  const { languages, hasSubtitles } = extractTorrentLanguages(title);
+
+  // 6. Browser Compatibility Check
   // Incompatible video: HEVC, XviD, DivX, AV1, DVD/VOB
   const hasIncompatibleVideo = /hevc|h\.?265|x265|xvid|divx|av1|vc-?1|mpeg-?2|dvdrip|dvdr|vob/i.test(title);
   // Incompatible heavy audio: DTS, TrueHD, FLAC, Atmos
@@ -100,91 +161,144 @@ export function parseTorrentTitle(title: string): ParseResult {
   const isBrowserNative =
     hasCompatibleVideo && !hasIncompatibleVideo && !hasIncompatibleAudio && !isRemuxOrDisc;
 
-  return { quality, codec, audio, ripType, isBrowserNative };
+  return { quality, codec, audio, ripType, languages, hasSubtitles, isBrowserNative };
+}
+
+async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
+  if (!JACKETT_API_KEY) {
+    console.warn('JACKETT_API_KEY is not configured in environment variables.');
+  }
+
+  const url = new URL(`${JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api`);
+  url.searchParams.append('apikey', JACKETT_API_KEY);
+  url.searchParams.append('t', 'search');
+  url.searchParams.append('q', searchQuery);
+  url.searchParams.append('format', 'json');
+
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { Accept: 'application/json, text/xml, */*' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Jackett response error: ${res.status} ${res.statusText}`);
+    }
+
+    const contentType = res.headers.get('content-type') || '';
+    let rawResults: any[] = [];
+
+    if (contentType.includes('application/json')) {
+      const jsonData = await res.json();
+      rawResults = jsonData.Results || jsonData.items || [];
+    } else {
+      // Parse Torznab XML fallback
+      const xmlText = await res.text();
+      const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: '@_',
+      });
+      const xmlObj = parser.parse(xmlText);
+      const channel = xmlObj?.rss?.channel;
+      const items = channel?.item;
+      rawResults = Array.isArray(items) ? items : items ? [items] : [];
+    }
+
+    const parsedItems: TorrentItem[] = rawResults.map((item: any, idx: number) => {
+      const title = item.Title || item.title || 'Unknown Title';
+      const size = Number(item.Size || item.size || item['@_length'] || 0);
+
+      const rawAttrs = item['torznab:attr'];
+      const attrs = Array.isArray(rawAttrs) ? rawAttrs : rawAttrs ? [rawAttrs] : [];
+      const getAttr = (name: string) => attrs.find((a: any) => a?.['@_name'] === name)?.['@_value'];
+
+      const seeders = Number(item.Seeders ?? item.seeders ?? getAttr('seeders') ?? 0);
+      const peers = Number(item.Peers ?? item.peers ?? getAttr('peers') ?? 0);
+      const link = item.Link || item.link || '';
+      const magnetUrl = item.MagnetUri || item.magneturl || getAttr('magneturl') || (link.startsWith('magnet:') ? link : undefined);
+      const publishDate = item.PublishDate || item.pubDate || new Date().toISOString();
+
+      const jackettIdx = item.jackettindexer;
+      const indexerName =
+        item.Tracker ||
+        item.indexer ||
+        (typeof jackettIdx === 'string' ? jackettIdx : jackettIdx?.['#text']) ||
+        'Indexer';
+
+      const parsed = parseTorrentTitle(title);
+      const langAttr = getAttr('language');
+      const finalLangs = langAttr ? extractTorrentLanguages(title, langAttr) : {
+        languages: parsed.languages,
+        hasSubtitles: parsed.hasSubtitles,
+      };
+
+      return {
+        id: `${indexerName}-${idx}-${Date.now()}`,
+        title,
+        category: [],
+        size,
+        formattedSize: formatBytes(size),
+        publishDate,
+        seeders,
+        peers,
+        link: magnetUrl || link,
+        magnetUrl,
+        indexer: indexerName,
+        quality: parsed.quality,
+        codec: parsed.codec,
+        audio: parsed.audio,
+        ripType: parsed.ripType,
+        languages: finalLangs.languages,
+        hasSubtitles: finalLangs.hasSubtitles,
+        isBrowserNative: parsed.isBrowserNative,
+      };
+    });
+
+    // Sort by seeders descending (give priority to healthy torrents)
+    return parsedItems.sort((a, b) => b.seeders - a.seeders);
+  } catch (e) {
+    console.error('Failed to query Jackett:', e);
+    return [];
+  }
 }
 
 export const jackett = {
   /**
-   * Search torrents on Jackett / Prowlarr via Torznab API
+   * Search torrents on Jackett / Prowlarr via Torznab API with caching & in-flight deduplication
    */
   async search(query: string, year?: string | number): Promise<TorrentItem[]> {
-    if (!JACKETT_API_KEY) {
-      console.warn('JACKETT_API_KEY is not configured in environment variables.');
-    }
-
     const searchQuery = year ? `${query} ${year}` : query;
-    const url = new URL(`${JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api`);
-    url.searchParams.append('apikey', JACKETT_API_KEY);
-    url.searchParams.append('t', 'search');
-    url.searchParams.append('q', searchQuery);
-    url.searchParams.append('format', 'json');
+    const cacheKey = searchQuery.trim().toLowerCase();
+    const now = Date.now();
 
-    try {
-      const res = await fetch(url.toString(), {
-        headers: { Accept: 'application/json, text/xml, */*' },
-        next: { revalidate: 300 }, // Cache search for 5 minutes
-      });
-
-      if (!res.ok) {
-        throw new Error(`Jackett response error: ${res.status} ${res.statusText}`);
-      }
-
-      const contentType = res.headers.get('content-type') || '';
-      let rawResults: any[] = [];
-
-      if (contentType.includes('application/json')) {
-        const jsonData = await res.json();
-        rawResults = jsonData.Results || jsonData.items || [];
-      } else {
-        // Parse Torznab XML fallback
-        const xmlText = await res.text();
-        const parser = new XMLParser({
-          ignoreAttributes: false,
-          attributeNamePrefix: '@_',
-        });
-        const xmlObj = parser.parse(xmlText);
-        const channel = xmlObj?.rss?.channel;
-        const items = channel?.item;
-        rawResults = Array.isArray(items) ? items : items ? [items] : [];
-      }
-
-      const parsedItems: TorrentItem[] = rawResults.map((item: any, idx: number) => {
-        const title = item.Title || item.title || 'Unknown Title';
-        const size = Number(item.Size || item.size || item['@_length'] || 0);
-        const seeders = Number(item.Seeders || item.seeders || item['torznab:attr']?.find?.((a: any) => a['@_name'] === 'seeders')?.['@_value'] || 0);
-        const peers = Number(item.Peers || item.peers || item['torznab:attr']?.find?.((a: any) => a['@_name'] === 'peers')?.['@_value'] || 0);
-        const link = item.Link || item.link || '';
-        const magnetUrl = item.MagnetUri || item.magneturl || (link.startsWith('magnet:') ? link : undefined);
-        const publishDate = item.PublishDate || item.pubDate || new Date().toISOString();
-        const indexer = item.Tracker || item.indexer || 'Indexer';
-
-        const { quality, codec, audio, ripType, isBrowserNative } = parseTorrentTitle(title);
-
-        return {
-          id: `${indexer}-${idx}-${Date.now()}`,
-          title,
-          category: [],
-          size,
-          formattedSize: formatBytes(size),
-          publishDate,
-          seeders,
-          peers,
-          link: magnetUrl || link,
-          magnetUrl,
-          indexer,
-          quality,
-          codec,
-          audio,
-          ripType,
-          isBrowserNative,
-        };
-      });
-
-      // Filter and sort by seeders descending (give priority to healthy torrents)
-      return parsedItems.sort((a, b) => b.seeders - a.seeders);
-    } catch (e) {
-      console.error('Failed to query Jackett:', e);
-      return [];
+    const cached = searchCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.items;
     }
+
+    const inflight = inflightSearches.get(cacheKey);
+    if (inflight) {
+      return inflight;
+    }
+
+    const promise = fetchJackettRaw(searchQuery).then((items) => {
+      inflightSearches.delete(cacheKey);
+      if (items.length > 0) {
+        // Evict oldest if cache grows large
+        if (searchCache.size > 150) {
+          const oldestKey = searchCache.keys().next().value;
+          if (oldestKey) searchCache.delete(oldestKey);
+        }
+        searchCache.set(cacheKey, {
+          items,
+          expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+        });
+      }
+      return items;
+    });
+
+    inflightSearches.set(cacheKey, promise);
+    return promise;
   },
 };

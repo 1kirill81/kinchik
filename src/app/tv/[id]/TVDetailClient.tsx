@@ -69,9 +69,9 @@ export default function TVDetailClient({ tv }: TVDetailClientProps) {
   };
 
   return (
-    <div className="min-h-screen pb-20">
+    <div className="min-h-screen pb-16 sm:pb-20">
       {/* Backdrop Header */}
-      <div className="relative w-full h-[55vh] min-h-[450px] overflow-hidden">
+      <div className="relative w-full h-[36vh] min-h-[240px] sm:h-[52vh] sm:min-h-[380px] overflow-hidden">
         <img
           src={backdropUrl}
           alt={title}
@@ -82,11 +82,11 @@ export default function TVDetailClient({ tv }: TVDetailClientProps) {
       </div>
 
       {/* Main Details Body */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-44 relative z-10">
-        <div className="flex flex-col md:flex-row gap-8 items-start">
-          {/* TV Poster */}
-          <div className="w-56 sm:w-64 flex-shrink-0 mx-auto md:mx-0">
-            <div className="aspect-[2/3] rounded-2xl overflow-hidden bg-surface border border-white/10 shadow-2xl">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-24 sm:-mt-40 relative z-10">
+        <div className="flex flex-col md:flex-row gap-6 md:gap-8 items-center md:items-start">
+          {/* TV Poster & Action CTA */}
+          <div className="w-full max-w-[240px] sm:max-w-[256px] md:w-64 flex-shrink-0">
+            <div className="aspect-[2/3] w-44 sm:w-full mx-auto rounded-2xl overflow-hidden bg-surface border border-white/10 shadow-2xl">
               <img src={posterUrl} alt={title} className="w-full h-full object-cover" />
             </div>
 
@@ -94,9 +94,9 @@ export default function TVDetailClient({ tv }: TVDetailClientProps) {
             <div className="space-y-2.5 mt-4">
               <button
                 onClick={handleOpenEntireSeriesTorrents}
-                className="w-full py-3.5 px-4 rounded-xl bg-primary hover:bg-primary-hover text-white font-bold text-sm flex items-center justify-center gap-2 shadow-glow-primary transition-all transform hover:scale-[1.02] active:scale-[0.98]"
+                className="w-full py-3 sm:py-3.5 px-4 rounded-xl bg-primary hover:bg-primary-hover text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-glow-primary transition-all transform hover:scale-[1.02] active:scale-[0.98]"
               >
-                <Play className="w-5 h-5 fill-white" />
+                <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-white" />
                 Раздачи всего сериала
               </button>
 
@@ -117,7 +117,7 @@ export default function TVDetailClient({ tv }: TVDetailClientProps) {
           </div>
 
           {/* Details Column */}
-          <div className="flex-1 space-y-5 text-zinc-300">
+          <div className="flex-1 w-full min-w-0 space-y-4 sm:space-y-5 text-zinc-300">
             {/* Continue Watching Banner */}
             {savedProgress && savedProgress.season && savedProgress.episode && (
               <div className="p-4 rounded-2xl bg-gradient-to-r from-primary/20 via-surface to-surface border border-primary/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg animate-fade-in">

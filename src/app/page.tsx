@@ -41,7 +41,7 @@ export default async function HomePage() {
       <ContinueWatchingShelf />
 
       {/* Main Content Shelves */}
-      <div className="space-y-4 -mt-10 sm:-mt-16 relative z-20">
+      <div className="space-y-4 -mt-4 sm:-mt-12 md:-mt-16 relative z-20">
         {/* Trending Shelf */}
         <MediaCarousel
           title="В тренде сегодня"

@@ -52,15 +52,15 @@ export default function FavoritesClient() {
   });
 
   return (
-    <div className="min-h-screen py-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen py-6 sm:py-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-white/10">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 sm:pb-6 border-b border-white/10">
         <div>
           <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary shadow-glow-primary">
-              <Heart className="w-5 h-5 fill-primary" />
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary/20 flex items-center justify-center text-primary shadow-glow-primary flex-shrink-0">
+              <Heart className="w-4 h-4 sm:w-5 sm:h-5 fill-primary" />
             </div>
-            <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+            <h1 className="text-xl sm:text-3xl font-black text-white tracking-tight">
               Моё избранное
             </h1>
           </div>
@@ -70,10 +70,10 @@ export default function FavoritesClient() {
         </div>
 
         {/* Filters */}
-        <div className="flex items-center gap-2 bg-surface p-1.5 rounded-xl border border-white/5 text-xs">
+        <div className="flex items-center gap-1.5 sm:gap-2 bg-surface p-1 sm:p-1.5 rounded-xl border border-white/5 text-xs overflow-x-auto scrollbar-none">
           <button
             onClick={() => setFilterType('all')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition-colors ${
+            className={`px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap flex-shrink-0 transition-colors ${
               filterType === 'all'
                 ? 'bg-primary text-white shadow-glow-primary'
                 : 'text-zinc-400 hover:text-white'
@@ -83,7 +83,7 @@ export default function FavoritesClient() {
           </button>
           <button
             onClick={() => setFilterType('movie')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition-colors ${
+            className={`px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap flex-shrink-0 transition-colors ${
               filterType === 'movie'
                 ? 'bg-primary text-white shadow-glow-primary'
                 : 'text-zinc-400 hover:text-white'
@@ -93,7 +93,7 @@ export default function FavoritesClient() {
           </button>
           <button
             onClick={() => setFilterType('tv')}
-            className={`px-3 py-1.5 rounded-lg font-semibold transition-colors ${
+            className={`px-3 py-1.5 rounded-lg font-semibold whitespace-nowrap flex-shrink-0 transition-colors ${
               filterType === 'tv'
                 ? 'bg-primary text-white shadow-glow-primary'
                 : 'text-zinc-400 hover:text-white'

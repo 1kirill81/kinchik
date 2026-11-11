@@ -20,8 +20,8 @@ export default function MediaCard({ item }: MediaCardProps) {
   const posterUrl = tmdb.getImageUrl(item.poster_path, 'w500');
 
   return (
-    <Link href={href} className="group relative flex flex-col flex-shrink-0 w-44 sm:w-48 transition-transform duration-300">
-      <div className="relative aspect-[2/3] w-full rounded-2xl overflow-hidden bg-surface border border-white/10 shadow-lg group-hover:border-primary/50 group-hover:shadow-glow-primary transition-all duration-300">
+    <Link href={href} className="group relative flex flex-col flex-shrink-0 w-36 sm:w-44 md:w-48 transition-transform duration-300">
+      <div className="relative aspect-[2/3] w-full rounded-xl sm:rounded-2xl overflow-hidden bg-surface border border-white/10 shadow-lg group-hover:border-primary/50 group-hover:shadow-glow-primary transition-all duration-300">
         <img
           src={posterUrl}
           alt={title}
@@ -31,26 +31,26 @@ export default function MediaCard({ item }: MediaCardProps) {
 
         {/* Hover overlay with Play button */}
         <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/30 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
-          <div className="w-12 h-12 rounded-full bg-primary text-white flex items-center justify-center shadow-lg transform scale-75 group-hover:scale-100 transition-transform duration-300">
+          <div className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-primary text-white flex items-center justify-center shadow-lg transform scale-75 group-hover:scale-100 transition-transform duration-300">
             <Play className="w-5 h-5 fill-white ml-0.5" />
           </div>
         </div>
 
         {/* Rating Badge */}
         {item.vote_average > 0 && (
-          <div className="absolute top-2.5 right-2.5 px-2 py-0.5 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 text-xs font-bold text-amber-400">
-            <Star className="w-3 h-3 fill-amber-400" />
+          <div className="absolute top-2 right-2 sm:top-2.5 sm:right-2.5 px-1.5 sm:px-2 py-0.5 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-1 text-[10px] sm:text-xs font-bold text-amber-400">
+            <Star className="w-2.5 h-2.5 sm:w-3 sm:h-3 fill-amber-400" />
             <span>{item.vote_average.toFixed(1)}</span>
           </div>
         )}
 
         {/* Type Badge */}
-        <div className="absolute top-2.5 left-2.5 px-2 py-0.5 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-[10px] font-semibold uppercase tracking-wider text-zinc-300">
+        <div className="absolute top-2 left-2 sm:top-2.5 sm:left-2.5 px-1.5 sm:px-2 py-0.5 rounded-lg bg-black/70 backdrop-blur-md border border-white/10 text-[9px] sm:text-[10px] font-semibold uppercase tracking-wider text-zinc-300">
           {mediaType === 'movie' ? 'Фильм' : 'Сериал'}
         </div>
 
         {/* Favorite Button on Card */}
-        <div className="absolute bottom-2.5 right-2.5 z-20">
+        <div className="absolute bottom-2 right-2 sm:bottom-2.5 sm:right-2.5 z-20">
           <FavoriteButton
             item={{
               id: item.id,

@@ -1,7 +1,13 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: '#0a0d14',
+};
 
 export const metadata: Metadata = {
   title: 'KinoStream — Онлайн-кинотеатр с P2P стримингом через TorrServer',
