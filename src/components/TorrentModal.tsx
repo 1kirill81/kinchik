@@ -145,19 +145,14 @@ export default function TorrentModal({
 
       setPrepareStep('Запуск буфера и открытие плеера...');
 
-      // Always launch in browser-compatible Remux mode for 100% reliable audio & video
-      const needRemux = true;
-
-      // Redirect to full-featured watch cinema page
+      // Redirect to full-featured watch cinema page in Direct mode by default
       const watchUrl = `/watch?hash=${encodeURIComponent(data.hash)}&index=${data.fileIndex}&title=${encodeURIComponent(
         mediaTitle + (season && episode ? ` S${season}E${episode}` : '')
       )}&streamUrl=${encodeURIComponent(data.streamUrl)}&poster=${encodeURIComponent(poster || '')}${
         mediaId ? `&mediaId=${mediaId}` : ''
       }${mediaType ? `&mediaType=${mediaType}` : ''}${
         season ? `&season=${season}` : ''
-      }${episode ? `&episode=${episode}` : ''}${
-        needRemux ? '&remux=1' : ''
-      }`;
+      }${episode ? `&episode=${episode}` : ''}`;
 
       router.push(watchUrl);
     } catch (err: any) {

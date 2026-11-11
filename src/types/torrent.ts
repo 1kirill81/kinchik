@@ -97,3 +97,22 @@ export interface TorrServerLiveStats {
   preloadSize: number;
   isReady: boolean;
 }
+
+export interface AudioTrackInfo {
+  index: number;
+  audioOrder: number;
+  language: string;
+  title: string;
+  codec: string;
+  channels: number;
+  label: string;
+}
+
+export interface MediaProbeInfo {
+  duration: number;
+  videoStreamIndex: number | null;
+  videoCodec: string;
+  isH264: boolean;
+  audioTracks: AudioTrackInfo[];
+  defaultAudioIndex: number | null;
+}

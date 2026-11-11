@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'child_process';
+import { probeTorrentMedia } from '@/lib/ffprobe';
 
 export const dynamic = 'force-dynamic';
 
-const TORRSERVER_INTERNAL_URL = process.env.TORRSERVER_URL || 'http://localhost:8090';
+const TORRSERVER_INTERNAL_URL = (process.env.TORRSERVER_URL || 'http://localhost:8090').replace(/\/+$/, '');
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,6 +13,7 @@ export async function GET(request: NextRequest) {
     const index = searchParams.get('index') || '1';
     const title = searchParams.get('title') || 'video';
     const startTime = searchParams.get('startTime') || '0';
+    const requestedAudio = searchParams.get('audio');
 
     if (!link) {
       return new NextResponse('Missing link parameter', { status: 400 });
@@ -19,83 +21,38 @@ export async function GET(request: NextRequest) {
 
     const torrUrl = `${TORRSERVER_INTERNAL_URL}/stream/${encodeURIComponent(title)}?link=${link}&index=${index}&play`;
 
-    // 1. Probe video & audio streams with ffprobe (timeout 3.5s)
-    let isH264 = true;
-    let videoStreamIndex = 'v:0';
-    let audioStreamIndex: string | null = null;
+    // 1. Get cached or fresh media metadata (video codec & audio tracks)
+    const probeInfo = await probeTorrentMedia(link, index, title, 4500);
 
-    try {
-      const probeJson = await new Promise<any>((resolve) => {
-        const proc = spawn('ffprobe', [
-          '-v', 'error',
-          '-analyzeduration', '15000000',
-          '-probesize', '15000000',
-          '-show_streams',
-          '-of', 'json',
-          torrUrl,
-        ]);
-        let out = '';
-        proc.stdout.on('data', (d) => (out += d.toString()));
-        proc.on('close', () => {
-          try {
-            resolve(JSON.parse(out));
-          } catch {
-            resolve(null);
-          }
-        });
-        proc.on('error', () => resolve(null));
-        setTimeout(() => {
-          try { proc.kill(); } catch {}
-          resolve(null);
-        }, 3500);
-      });
-
-      if (probeJson && Array.isArray(probeJson.streams)) {
-        const streams: any[] = probeJson.streams;
-        const vStream = streams.find((s) => s.codec_type === 'video');
-        if (vStream) {
-          videoStreamIndex = `0:${vStream.index}`;
-          const cName = (vStream.codec_name || '').toLowerCase();
-          if (!cName.includes('h264') && !cName.includes('avc')) {
-            isH264 = false;
-          }
-        }
-
-        const aStreams = streams.filter((s) => s.codec_type === 'audio');
-        if (aStreams.length > 0) {
-          // Priority 1: Russian audio track (LostFilm, Dub, MVO, rus)
-          const rusTrack = aStreams.find((s) => {
-            const lang = (s.tags?.language || '').toLowerCase();
-            const trackTitle = (s.tags?.title || '').toLowerCase();
-            return (
-              lang.includes('rus') ||
-              lang.includes('ru') ||
-              trackTitle.includes('rus') ||
-              trackTitle.includes('рус') ||
-              trackTitle.includes('дубл') ||
-              trackTitle.includes('lostfilm') ||
-              trackTitle.includes('кубик') ||
-              trackTitle.includes('mvo') ||
-              trackTitle.includes('dvo')
-            );
-          });
-
-          const chosenAudio = rusTrack || aStreams[0];
-          audioStreamIndex = `0:${chosenAudio.index}`;
-        }
-      }
-    } catch {
-      // Fallback: check file extension in title or link
+    let isH264 = probeInfo.isH264;
+    if (probeInfo.videoStreamIndex === null) {
+      // Fallback if probe timed out
       if (title.toLowerCase().endsWith('.avi') || link.toLowerCase().includes('.avi')) {
         isH264 = false;
+      }
+    }
+
+    const videoStreamIndex = probeInfo.videoStreamIndex !== null ? `0:${probeInfo.videoStreamIndex}` : '0:v:0';
+
+    let chosenAudioStream: number | null = probeInfo.defaultAudioIndex;
+    if (requestedAudio !== null && requestedAudio !== '') {
+      const parsedAudio = parseInt(requestedAudio, 10);
+      if (!isNaN(parsedAudio)) {
+        // Verify if probed tracks contain this index, or trust numeric index if probe failed
+        const matchesProbed =
+          probeInfo.audioTracks.length === 0 ||
+          probeInfo.audioTracks.some((t) => t.index === parsedAudio);
+        if (matchesProbed) {
+          chosenAudioStream = parsedAudio;
+        }
       }
     }
 
     const ffmpegArgs: string[] = [
       '-hide_banner',
       '-loglevel', 'warning',
-      '-analyzeduration', '25000000',
-      '-probesize', '25000000',
+      '-analyzeduration', '20000000',
+      '-probesize', '20000000',
     ];
 
     const seekSeconds = parseFloat(startTime);
@@ -104,6 +61,7 @@ export async function GET(request: NextRequest) {
     }
 
     ffmpegArgs.push(
+      '-seekable', '1',
       '-reconnect', '1',
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
@@ -111,9 +69,8 @@ export async function GET(request: NextRequest) {
       '-map', videoStreamIndex
     );
 
-    // Map audio: explicitly mapped if probed, or 0:a:0 fallback
-    if (audioStreamIndex) {
-      ffmpegArgs.push('-map', audioStreamIndex);
+    if (chosenAudioStream !== null) {
+      ffmpegArgs.push('-map', `0:${chosenAudioStream}`);
     } else {
       ffmpegArgs.push('-map', '0:a:0?');
     }
@@ -136,7 +93,8 @@ export async function GET(request: NextRequest) {
       '-b:a', '192k',
       '-ac', '2',
       '-ar', '48000',
-      '-af', 'aresample=matrix_encoding=dplii,volume=1.4',
+      '-af', 'aresample=async=1:matrix_encoding=dplii,volume=1.4',
+      '-avoid_negative_ts', 'make_zero',
       '-max_muxing_queue_size', '4096',
       '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
       '-f', 'mp4',

@@ -17,7 +17,7 @@ import {
   Copy,
   Check,
 } from 'lucide-react';
-import { TorrServerLiveStats } from '@/types/torrent';
+import { AudioTrackInfo, TorrServerLiveStats } from '@/types/torrent';
 
 const ruI18n = {
   'Video Load Failed': 'Ошибка загрузки видео',
@@ -44,6 +44,11 @@ interface VideoPlayerProps {
   poster?: string;
   subtitles?: { url: string; label: string; default?: boolean }[];
   initialTime?: number;
+  remuxStartTime?: number;
+  externalDuration?: number;
+  audioTracks?: AudioTrackInfo[];
+  selectedAudioIndex?: number | null;
+  onSelectAudioTrack?: (streamIndex: number) => void;
   isRemux?: boolean;
   onToggleRemux?: () => void;
   onTimeUpdate?: (currentTime: number, duration: number) => void;
@@ -58,6 +63,11 @@ export default function VideoPlayer({
   poster,
   subtitles = [],
   initialTime = 0,
+  remuxStartTime = 0,
+  externalDuration = 0,
+  audioTracks = [],
+  selectedAudioIndex = null,
+  onSelectAudioTrack,
   isRemux = false,
   onToggleRemux,
   onTimeUpdate,
@@ -66,7 +76,64 @@ export default function VideoPlayer({
   const artRef = useRef<HTMLDivElement>(null);
   const playerInstance = useRef<Artplayer | null>(null);
   const hasSeekedRef = useRef<boolean>(false);
+  const remuxOffsetRef = useRef<number>(remuxStartTime || 0);
+  const remuxDurationRef = useRef<number>(externalDuration || 0);
+  const pendingRemuxSeekRef = useRef<number | null>(null);
+  const seekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const streamUrlRef = useRef<string>(streamUrl);
+  const onSelectAudioRef = useRef(onSelectAudioTrack);
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    streamUrlRef.current = streamUrl;
+  }, [streamUrl]);
+
+  useEffect(() => {
+    onSelectAudioRef.current = onSelectAudioTrack;
+  }, [onSelectAudioTrack]);
+
+  // Sync external duration (from ffprobe / TMDB) into live Remux video proxy
+  useEffect(() => {
+    if (externalDuration && externalDuration > 0) {
+      remuxDurationRef.current = externalDuration;
+      const art = playerInstance.current;
+      if (art) {
+        art.emit('video:timeupdate');
+        art.emit('video:progress');
+      }
+    }
+  }, [externalDuration]);
+
+  // Sync audio tracks into Artplayer Settings gear menu (works in fullscreen too)
+  useEffect(() => {
+    const art = playerInstance.current;
+    if (!art || !audioTracks || audioTracks.length === 0) return;
+
+    const currentTrack =
+      audioTracks.find((t) => t.index === selectedAudioIndex) || audioTracks[0];
+
+    try {
+      art.setting.update({
+        name: 'audio-track',
+        width: 280,
+        html: 'Озвучка',
+        tooltip: currentTrack ? currentTrack.label : 'По умолчанию',
+        selector: audioTracks.map((track) => ({
+          default: track.index === (selectedAudioIndex ?? audioTracks[0]?.index),
+          html: track.label,
+          value: track.index,
+        })),
+        onSelect(item: any) {
+          if (onSelectAudioRef.current && typeof item.value === 'number') {
+            onSelectAudioRef.current(item.value);
+          }
+          return item.html;
+        },
+      });
+    } catch (e) {
+      // ignore if setting panel is unmounted
+    }
+  }, [audioTracks, selectedAudioIndex]);
 
   // Live stats from TorrServer
   const [stats, setStats] = useState<TorrServerLiveStats | null>(null);
@@ -108,6 +175,15 @@ export default function VideoPlayer({
   useEffect(() => {
     if (typeof window === 'undefined' || !artRef.current) return;
 
+    // Reset seek offset & pending timers for the new stream instance
+    remuxOffsetRef.current = isRemux ? (remuxStartTime || 0) : 0;
+    remuxDurationRef.current = externalDuration || 0;
+    pendingRemuxSeekRef.current = null;
+    if (seekTimerRef.current) {
+      clearTimeout(seekTimerRef.current);
+      seekTimerRef.current = null;
+    }
+
     // Destroy existing instance if any
     if (playerInstance.current) {
       try {
@@ -142,7 +218,7 @@ export default function VideoPlayer({
         mutex: true,
         backdrop: true,
         playsInline: true,
-        autoPlayback: true,
+        autoPlayback: false,
         airplay: true,
         theme: '#e50914',
         hotkey: true,
@@ -170,6 +246,105 @@ export default function VideoPlayer({
         },
       };
 
+      // In Remux mode, fragmented MP4 over HTTP pipe has no duration header;
+      // proxy the <video> element to expose full episode duration & server-side -ss seeking.
+      if (isRemux) {
+        artOptions.proxy = function () {
+          const video = document.createElement('video');
+          video.playsInline = true;
+
+          const nativeDurationDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
+          const nativeCurrentTimeDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+          const nativeBufferedDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'buffered');
+
+          Object.defineProperty(video, 'duration', {
+            configurable: true,
+            get() {
+              if (remuxDurationRef.current > 0) {
+                return remuxDurationRef.current;
+              }
+              // Never show gradually ticking fragment duration in Remux mode before probe finishes
+              return 0;
+            },
+          });
+
+          Object.defineProperty(video, 'currentTime', {
+            configurable: true,
+            get() {
+              if (pendingRemuxSeekRef.current !== null) {
+                return pendingRemuxSeekRef.current;
+              }
+              const nativeTime = nativeCurrentTimeDesc?.get?.call(this) || 0;
+              return remuxOffsetRef.current + nativeTime;
+            },
+            set(val: number) {
+              const maxDur = remuxDurationRef.current || Infinity;
+              const target = Math.max(0, Math.min(val, maxDur));
+              const offset = remuxOffsetRef.current;
+              const buf = nativeBufferedDesc?.get?.call(this);
+              let maxNativeBuf = 0;
+              if (buf && buf.length > 0) {
+                maxNativeBuf = buf.end(buf.length - 1);
+              }
+
+              // Fast native seek if target is already inside current buffered chunk
+              if (target >= offset && target <= offset + maxNativeBuf - 0.5) {
+                hasSeekedRef.current = true;
+                pendingRemuxSeekRef.current = null;
+                if (seekTimerRef.current) {
+                  clearTimeout(seekTimerRef.current);
+                  seekTimerRef.current = null;
+                }
+                nativeCurrentTimeDesc?.set?.call(this, target - offset);
+                return;
+              }
+
+              // Debounced server-side FFmpeg seek (-ss)
+              hasSeekedRef.current = true;
+              pendingRemuxSeekRef.current = target;
+              if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
+              seekTimerRef.current = setTimeout(() => {
+                const finalTarget = Math.floor(target);
+                pendingRemuxSeekRef.current = null;
+                remuxOffsetRef.current = finalTarget;
+                setIsBuffering(true);
+
+                try {
+                  const u = new URL(streamUrlRef.current, window.location.origin);
+                  u.searchParams.set('startTime', finalTarget.toString());
+                  video.src = u.pathname + u.search;
+                  video.load();
+                  video.play().catch(() => {});
+                } catch (err) {
+                  console.error('Remux seek error:', err);
+                }
+              }, 350);
+            },
+          });
+
+          Object.defineProperty(video, 'buffered', {
+            configurable: true,
+            get() {
+              const rawBuf = nativeBufferedDesc?.get?.call(this);
+              const offset = remuxOffsetRef.current;
+              return {
+                get length() {
+                  return rawBuf ? rawBuf.length : 0;
+                },
+                start(i: number) {
+                  return (rawBuf ? rawBuf.start(i) : 0) + offset;
+                },
+                end(i: number) {
+                  return (rawBuf ? rawBuf.end(i) : 0) + offset;
+                },
+              };
+            },
+          });
+
+          return video;
+        };
+      }
+
       if (subtitles && subtitles.length > 0) {
         artOptions.subtitle = {
           url: subtitles[0].url,
@@ -183,8 +358,33 @@ export default function VideoPlayer({
         };
       }
 
-      hasSeekedRef.current = false;
+      // Skip initial seek if Remux already started directly at remuxStartTime
+      hasSeekedRef.current = isRemux && remuxStartTime > 0 && Math.abs(remuxStartTime - initialTime) <= 5;
       const art = new Artplayer(artOptions);
+
+      if (audioTracks && audioTracks.length > 0) {
+        const currentTrack =
+          audioTracks.find((t) => t.index === selectedAudioIndex) || audioTracks[0];
+        try {
+          art.setting.update({
+            name: 'audio-track',
+            width: 280,
+            html: 'Озвучка',
+            tooltip: currentTrack ? currentTrack.label : 'По умолчанию',
+            selector: audioTracks.map((track) => ({
+              default: track.index === (selectedAudioIndex ?? audioTracks[0]?.index),
+              html: track.label,
+              value: track.index,
+            })),
+            onSelect(item: any) {
+              if (onSelectAudioRef.current && typeof item.value === 'number') {
+                onSelectAudioRef.current(item.value);
+              }
+              return item.html;
+            },
+          });
+        } catch {}
+      }
 
       const handleSeekInitial = () => {
         if (initialTime && initialTime > 5 && !hasSeekedRef.current) {
@@ -213,17 +413,12 @@ export default function VideoPlayer({
       });
 
       art.on('video:timeupdate', () => {
-        if (onTimeUpdate && art.duration > 0) {
+        if (pendingRemuxSeekRef.current === null && onTimeUpdate && art.duration > 0) {
           onTimeUpdate(art.currentTime, art.duration);
         }
       });
 
       art.on('video:error', () => {
-        if (!isRemux && onToggleRemux) {
-          console.warn('Direct stream failed, auto-switching to Remux mode...');
-          onToggleRemux();
-          return;
-        }
         setPlayerError('Ошибка декодирования видео в браузере. Возможно, данный кодек не поддерживается вашим браузером.');
       });
 
@@ -239,6 +434,10 @@ export default function VideoPlayer({
     }
 
     return () => {
+      if (seekTimerRef.current) {
+        clearTimeout(seekTimerRef.current);
+        seekTimerRef.current = null;
+      }
       if (playerInstance.current) {
         try {
           playerInstance.current.destroy(false);

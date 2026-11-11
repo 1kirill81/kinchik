@@ -22,9 +22,12 @@ import {
   Sparkles,
   Copy,
   Check,
+  Volume2,
+  ChevronDown,
+  Languages,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { TorrServerFile, TorrServerTorrent, ParsedEpisodeFile } from '@/types/torrent';
+import { TorrServerFile, TorrServerTorrent, ParsedEpisodeFile, AudioTrackInfo } from '@/types/torrent';
 import { formatBytes } from '@/lib/utils';
 import { isVideoFile, isSampleFile } from '@/lib/torrserver';
 import { storage } from '@/lib/storage';
@@ -121,8 +124,29 @@ export default function WatchClient() {
   const [isRemux, setIsRemux] = useState(initialRemux);
   const [copiedTop, setCopiedTop] = useState(false);
 
+  // Media probe info (real duration & embedded audio tracks)
+  const [mediaDuration, setMediaDuration] = useState<number>(0);
+  const [audioTracks, setAudioTracks] = useState<AudioTrackInfo[]>([]);
+  const [selectedAudioIndex, setSelectedAudioIndex] = useState<number | null>(null);
+  const [activeRemuxAudio, setActiveRemuxAudio] = useState<number | null>(null);
+  const [remuxStartTime, setRemuxStartTime] = useState<number>(0);
+  const [isAudioMenuOpen, setIsAudioMenuOpen] = useState(false);
+  const audioMenuRef = useRef<HTMLDivElement>(null);
+  const latestPlaybackTimeRef = useRef<number>(0);
+
   // Active season tab for series
   const [activeSeason, setActiveSeason] = useState<number>(1);
+
+  // Close audio track dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (audioMenuRef.current && !audioMenuRef.current.contains(e.target as Node)) {
+        setIsAudioMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Load files list from TorrServer for this torrent
   useEffect(() => {
@@ -146,12 +170,72 @@ export default function WatchClient() {
     loadTorrentInfo();
   }, [hash]);
 
-  // Update stream URL if index, proxy, or remux option changes
+  // Probe full duration & audio tracks for the currently playing file
+  useEffect(() => {
+    if (!hash) return;
+
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    setMediaDuration(0);
+    setAudioTracks([]);
+    setSelectedAudioIndex(null);
+    setActiveRemuxAudio(null);
+    setRemuxStartTime(0);
+    latestPlaybackTimeRef.current = 0;
+
+    async function fetchMediaInfo(attempt = 1) {
+      try {
+        const res = await fetch(
+          `/api/stream/info?link=${encodeURIComponent(hash)}&index=${currentIndex}&title=${encodeURIComponent(rawTitle)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (data.success) {
+          if (data.duration > 0) {
+            setMediaDuration(data.duration);
+          }
+          if (Array.isArray(data.audioTracks) && data.audioTracks.length > 0) {
+            setAudioTracks(data.audioTracks);
+            setSelectedAudioIndex((prev) => (prev !== null ? prev : data.defaultAudioIndex));
+          }
+
+          if (attempt === 1 && !data.duration && (!data.audioTracks || data.audioTracks.length === 0)) {
+            retryTimer = setTimeout(() => fetchMediaInfo(2), 4000);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to fetch stream probe info:', err);
+      }
+    }
+
+    fetchMediaInfo(1);
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [hash, currentIndex, rawTitle]);
+
+  // Update stream URL if index, proxy, remux, or audio track changes
   useEffect(() => {
     if (!hash) return;
 
     if (isRemux) {
-      setStreamUrl(`/api/stream/remux?link=${hash}&index=${currentIndex}&title=${encodeURIComponent(rawTitle)}`);
+      const params = new URLSearchParams({
+        link: hash,
+        index: currentIndex.toString(),
+        title: rawTitle,
+      });
+      if (remuxStartTime > 0) {
+        params.set('startTime', Math.floor(remuxStartTime).toString());
+      }
+      if (activeRemuxAudio !== null) {
+        params.set('audio', activeRemuxAudio.toString());
+      }
+      setStreamUrl(`/api/stream/remux?${params.toString()}`);
       return;
     }
 
@@ -163,7 +247,27 @@ export default function WatchClient() {
     }
 
     setStreamUrl(url);
-  }, [hash, currentIndex, rawTitle, useProxy, isRemux]);
+  }, [hash, currentIndex, rawTitle, useProxy, isRemux, remuxStartTime, activeRemuxAudio]);
+
+  const handleToggleRemuxMode = (enableRemux: boolean) => {
+    const resumeAt = Math.floor(latestPlaybackTimeRef.current || 0);
+    if (enableRemux) {
+      setRemuxStartTime(resumeAt);
+      setIsRemux(true);
+    } else {
+      setIsRemux(false);
+    }
+  };
+
+  const handleSelectAudioTrack = (streamIndex: number) => {
+    const resumeAt = Math.floor(latestPlaybackTimeRef.current || 0);
+    setSelectedAudioIndex(streamIndex);
+    setActiveRemuxAudio(streamIndex);
+    setRemuxStartTime(resumeAt);
+    // Browser native <video> cannot switch embedded MKV audio tracks; switch to Remux at current position
+    setIsRemux(true);
+    setIsAudioMenuOpen(false);
+  };
 
   // Parse all video files in torrent
   const parsedEpisodes = useMemo<ParsedEpisodeFile[]>(() => {
@@ -246,8 +350,11 @@ export default function WatchClient() {
 
   // Throttled timeupdate progress saving
   const lastSavedRef = useRef<number>(0);
+  const lastInitializedFileRef = useRef<string>('');
 
   const handleTimeUpdate = (currentTime: number, duration: number) => {
+    latestPlaybackTimeRef.current = currentTime;
+
     const now = Date.now();
     if (now - lastSavedRef.current < 4000) return;
     lastSavedRef.current = now;
@@ -277,9 +384,16 @@ export default function WatchClient() {
     });
   };
 
-  // Immediate save on episode/file change
+  // Immediate save only when switching to a genuinely new episode/file
   useEffect(() => {
     if (!hash || !streamUrl) return;
+    const fileKey = `${hash}:${currentIndex}`;
+    if (lastInitializedFileRef.current === fileKey) return;
+    lastInitializedFileRef.current = fileKey;
+
+    if (savedProgress && savedProgress.fileIndex === currentIndex && savedProgress.currentTime > 5) {
+      return;
+    }
 
     const currentEp = parsedEpisodes.find((ep) => ep.id === currentIndex);
     const seasonNum =
@@ -309,6 +423,7 @@ export default function WatchClient() {
     hash,
     streamUrl,
     parsedEpisodes,
+    savedProgress,
     mediaId,
     mediaType,
     rawTitle,
@@ -335,10 +450,13 @@ export default function WatchClient() {
     );
   }
 
+  const activeAudioTrack =
+    audioTracks.find((t) => t.index === selectedAudioIndex) || audioTracks[0] || null;
+
   return (
     <div className="min-h-screen bg-black text-zinc-100 pb-20">
       {/* Top Cinema Navbar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between border-b border-white/5">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-wrap items-center justify-between gap-3 border-b border-white/5">
         <button
           onClick={() => router.back()}
           className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface border border-white/10 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-white/10 transition-colors"
@@ -346,8 +464,8 @@ export default function WatchClient() {
           <ArrowLeft className="w-4 h-4" /> Назад
         </button>
 
-        <div className="text-center truncate px-4">
-          <h1 className="text-sm sm:text-base font-bold text-white truncate max-w-lg">
+        <div className="text-center truncate px-4 flex-1 min-w-[200px]">
+          <h1 className="text-sm sm:text-base font-bold text-white truncate max-w-lg mx-auto">
             {rawTitle}
           </h1>
           <p className="text-[11px] text-zinc-400 flex items-center justify-center gap-1.5 mt-0.5">
@@ -358,7 +476,7 @@ export default function WatchClient() {
           </p>
         </div>
 
-        {/* Top Controls: Mode Switcher, VLC Helpers & Favorite Button */}
+        {/* Top Controls: Audio Track, Mode Switcher, VLC Helpers & Favorite Button */}
         <div className="flex flex-wrap items-center gap-2">
           {mediaId && (
             <FavoriteButton
@@ -375,10 +493,61 @@ export default function WatchClient() {
             />
           )}
 
+          {/* Audio Track / Voiceover Switcher */}
+          {audioTracks.length > 0 && (
+            <div ref={audioMenuRef} className="relative">
+              <button
+                onClick={() => setIsAudioMenuOpen(!isAudioMenuOpen)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface hover:bg-white/10 border border-white/10 text-xs font-medium text-zinc-200 transition-colors max-w-[210px]"
+                title="Сменить озвучку / аудиодорожку"
+              >
+                <Languages className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                <span className="truncate">
+                  {activeAudioTrack ? activeAudioTrack.label : 'Озвучка'}
+                </span>
+                <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 flex-shrink-0 transition-transform ${isAudioMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isAudioMenuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-72 bg-zinc-950/95 backdrop-blur-xl border border-white/15 rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-white/5">
+                  <div className="px-3 py-2 bg-white/5 flex items-center justify-between">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+                      <Volume2 className="w-3.5 h-3.5 text-primary" /> Выбор озвучки ({audioTracks.length})
+                    </span>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto divide-y divide-white/5">
+                    {audioTracks.map((track) => {
+                      const isActive = track.index === (selectedAudioIndex ?? audioTracks[0]?.index);
+                      return (
+                        <button
+                          key={track.index}
+                          onClick={() => handleSelectAudioTrack(track.index)}
+                          className={`w-full text-left px-3 py-2.5 text-xs flex items-center justify-between gap-2 transition-colors ${
+                            isActive
+                              ? 'bg-primary/20 text-white font-semibold'
+                              : 'text-zinc-300 hover:bg-white/10 hover:text-white'
+                          }`}
+                        >
+                          <span className="truncate">{track.label}</span>
+                          {isActive && <Check className="w-3.5 h-3.5 text-primary flex-shrink-0" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {audioTracks.length === 1 && (
+                    <div className="px-3 py-2 text-[10px] text-zinc-500 bg-black/40">
+                      В этом торрент-файле только 1 дорожка. Другую озвучку можно выбрать в списке раздач.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Mode Switcher: Direct P2P vs MP4 Remux */}
           <div className="flex items-center rounded-lg bg-surface border border-white/10 p-0.5 text-xs">
             <button
-              onClick={() => setIsRemux(false)}
+              onClick={() => handleToggleRemuxMode(false)}
               className={`px-2.5 py-1 rounded-md font-medium transition-colors ${
                 !isRemux ? 'bg-primary text-white shadow-glow-primary' : 'text-zinc-400 hover:text-white'
               }`}
@@ -387,7 +556,7 @@ export default function WatchClient() {
               Прямой
             </button>
             <button
-              onClick={() => setIsRemux(true)}
+              onClick={() => handleToggleRemuxMode(true)}
               className={`px-2.5 py-1 rounded-md font-medium flex items-center gap-1 transition-colors ${
                 isRemux ? 'bg-primary text-white shadow-glow-primary' : 'text-zinc-400 hover:text-white'
               }`}
@@ -421,8 +590,13 @@ export default function WatchClient() {
             title={rawTitle}
             poster={poster}
             initialTime={initialTime}
+            remuxStartTime={remuxStartTime}
+            externalDuration={mediaDuration}
+            audioTracks={audioTracks}
+            selectedAudioIndex={selectedAudioIndex}
+            onSelectAudioTrack={handleSelectAudioTrack}
             isRemux={isRemux}
-            onToggleRemux={() => setIsRemux(!isRemux)}
+            onToggleRemux={() => handleToggleRemuxMode(!isRemux)}
             onTimeUpdate={handleTimeUpdate}
             onEnded={() => {
               if (nextEpisode) {
