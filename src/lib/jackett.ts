@@ -165,75 +165,116 @@ export function parseTorrentTitle(title: string): ParseResult {
 }
 
 async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
-  if (!JACKETT_API_KEY) {
-    console.warn('JACKETT_API_KEY is not configured in environment variables.');
+  const jackettUrl = (process.env.JACKETT_URL || JACKETT_URL).replace(/\/+$/, '');
+  const jackettApiKey = process.env.JACKETT_API_KEY || JACKETT_API_KEY;
+
+  if (!jackettApiKey) {
+    throw new Error('Не указан JACKETT_API_KEY в файле .env на сервере');
   }
 
-  const url = new URL(`${JACKETT_URL}/api/v2.0/indexers/all/results/torznab/api`);
-  url.searchParams.append('apikey', JACKETT_API_KEY);
+  const url = new URL(`${jackettUrl}/api/v2.0/indexers/all/results/torznab/api`);
+  url.searchParams.append('apikey', jackettApiKey);
   url.searchParams.append('t', 'search');
   url.searchParams.append('q', searchQuery);
   url.searchParams.append('format', 'json');
 
-  try {
-    const res = await fetch(url.toString(), {
-      headers: { Accept: 'application/json, text/xml, */*' },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(10000),
+  const res = await fetch(url.toString(), {
+    headers: { Accept: 'application/json, text/xml, */*' },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(25000),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Ошибка ответа Jackett: HTTP ${res.status} ${res.statusText}`);
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  let rawResults: any[] = [];
+
+  if (contentType.includes('application/json')) {
+    const jsonData = await res.json();
+    if (jsonData?.error) {
+      throw new Error(`Jackett API error: ${jsonData.error}`);
+    }
+    rawResults = jsonData.Results || jsonData.items || [];
+  } else {
+    // Parse Torznab XML fallback
+    const xmlText = await res.text();
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
     });
+    const xmlObj = parser.parse(xmlText);
 
-    if (!res.ok) {
-      throw new Error(`Jackett response error: ${res.status} ${res.statusText}`);
+    // Torznab returns HTTP 200 with <error code="..." description="..."/> on invalid API key or tracker error
+    if (xmlObj?.error) {
+      const desc = xmlObj.error['@_description'] || xmlObj.error['@_code'] || 'Unknown Torznab error';
+      throw new Error(`Jackett ошибка (${desc}). Проверьте JACKETT_API_KEY и трекеры.`);
     }
 
-    const contentType = res.headers.get('content-type') || '';
-    let rawResults: any[] = [];
+    const channel = xmlObj?.rss?.channel;
+    const items = channel?.item;
+    rawResults = Array.isArray(items) ? items : items ? [items] : [];
+  }
 
-    if (contentType.includes('application/json')) {
-      const jsonData = await res.json();
-      rawResults = jsonData.Results || jsonData.items || [];
-    } else {
-      // Parse Torznab XML fallback
-      const xmlText = await res.text();
-      const parser = new XMLParser({
-        ignoreAttributes: false,
-        attributeNamePrefix: '@_',
-      });
-      const xmlObj = parser.parse(xmlText);
-      const channel = xmlObj?.rss?.channel;
-      const items = channel?.item;
-      rawResults = Array.isArray(items) ? items : items ? [items] : [];
-    }
+  const parsedItems: TorrentItem[] = [];
 
-    const parsedItems: TorrentItem[] = rawResults.map((item: any, idx: number) => {
-      const title = item.Title || item.title || 'Unknown Title';
-      const size = Number(item.Size || item.size || item['@_length'] || 0);
+  for (let idx = 0; idx < rawResults.length; idx++) {
+    const item = rawResults[idx];
+    if (!item || typeof item !== 'object') continue;
+
+    try {
+      const rawTitle = item.Title ?? item.title ?? 'Unknown Title';
+      const title =
+        typeof rawTitle === 'object' && rawTitle !== null
+          ? String(rawTitle['#text'] ?? 'Unknown Title')
+          : String(rawTitle);
+
+      const size = Number(item.Size ?? item.size ?? item['@_length'] ?? 0) || 0;
 
       const rawAttrs = item['torznab:attr'];
       const attrs = Array.isArray(rawAttrs) ? rawAttrs : rawAttrs ? [rawAttrs] : [];
-      const getAttr = (name: string) => attrs.find((a: any) => a?.['@_name'] === name)?.['@_value'];
+      const getAttr = (name: string) =>
+        attrs.find((a: any) => a?.['@_name'] === name)?.['@_value'];
 
-      const seeders = Number(item.Seeders ?? item.seeders ?? getAttr('seeders') ?? 0);
-      const peers = Number(item.Peers ?? item.peers ?? getAttr('peers') ?? 0);
-      const link = item.Link || item.link || '';
-      const magnetUrl = item.MagnetUri || item.magneturl || getAttr('magneturl') || (link.startsWith('magnet:') ? link : undefined);
-      const publishDate = item.PublishDate || item.pubDate || new Date().toISOString();
+      const seeders = Number(item.Seeders ?? item.seeders ?? getAttr('seeders') ?? 0) || 0;
+      const peers = Number(item.Peers ?? item.peers ?? getAttr('peers') ?? 0) || 0;
+
+      const rawLink = item.Link ?? item.link ?? '';
+      const link =
+        typeof rawLink === 'object' && rawLink !== null
+          ? String(rawLink['#text'] ?? '')
+          : String(rawLink);
+
+      const rawMagnet = item.MagnetUri ?? item.magneturl ?? getAttr('magneturl');
+      const magnetUrl =
+        typeof rawMagnet === 'string' && rawMagnet
+          ? rawMagnet
+          : link.startsWith('magnet:')
+          ? link
+          : undefined;
+
+      const publishDate = String(item.PublishDate ?? item.pubDate ?? new Date().toISOString());
 
       const jackettIdx = item.jackettindexer;
-      const indexerName =
+      const indexerName = String(
         item.Tracker ||
-        item.indexer ||
-        (typeof jackettIdx === 'string' ? jackettIdx : jackettIdx?.['#text']) ||
-        'Indexer';
+          item.tracker ||
+          item.indexer ||
+          (typeof jackettIdx === 'string' ? jackettIdx : jackettIdx?.['#text']) ||
+          'Indexer'
+      );
 
       const parsed = parseTorrentTitle(title);
       const langAttr = getAttr('language');
-      const finalLangs = langAttr ? extractTorrentLanguages(title, langAttr) : {
-        languages: parsed.languages,
-        hasSubtitles: parsed.hasSubtitles,
-      };
+      const finalLangs = langAttr
+        ? extractTorrentLanguages(title, String(langAttr))
+        : {
+            languages: parsed.languages,
+            hasSubtitles: parsed.hasSubtitles,
+          };
 
-      return {
+      parsedItems.push({
         id: `${indexerName}-${idx}-${Date.now()}`,
         title,
         category: [],
@@ -252,15 +293,16 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
         languages: finalLangs.languages,
         hasSubtitles: finalLangs.hasSubtitles,
         isBrowserNative: parsed.isBrowserNative,
-      };
-    });
-
-    // Sort by seeders descending (give priority to healthy torrents)
-    return parsedItems.sort((a, b) => b.seeders - a.seeders);
-  } catch (e) {
-    console.error('Failed to query Jackett:', e);
-    return [];
+      });
+    } catch (itemErr) {
+      console.warn('Skipping malformed torrent item:', itemErr);
+    }
   }
+
+  console.log(`[Jackett] Query "${searchQuery}" -> ${parsedItems.length} results`);
+
+  // Sort by seeders descending (give priority to healthy torrents)
+  return parsedItems.sort((a, b) => b.seeders - a.seeders);
 }
 
 export const jackett = {
@@ -282,21 +324,25 @@ export const jackett = {
       return inflight;
     }
 
-    const promise = fetchJackettRaw(searchQuery).then((items) => {
-      inflightSearches.delete(cacheKey);
-      if (items.length > 0) {
-        // Evict oldest if cache grows large
-        if (searchCache.size > 150) {
-          const oldestKey = searchCache.keys().next().value;
-          if (oldestKey) searchCache.delete(oldestKey);
+    const promise = fetchJackettRaw(searchQuery)
+      .then((items) => {
+        inflightSearches.delete(cacheKey);
+        if (items.length > 0) {
+          if (searchCache.size > 150) {
+            const oldestKey = searchCache.keys().next().value;
+            if (oldestKey) searchCache.delete(oldestKey);
+          }
+          searchCache.set(cacheKey, {
+            items,
+            expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
+          });
         }
-        searchCache.set(cacheKey, {
-          items,
-          expiresAt: Date.now() + SEARCH_CACHE_TTL_MS,
-        });
-      }
-      return items;
-    });
+        return items;
+      })
+      .catch((err) => {
+        inflightSearches.delete(cacheKey);
+        throw err;
+      });
 
     inflightSearches.set(cacheKey, promise);
     return promise;
