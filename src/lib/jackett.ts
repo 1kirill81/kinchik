@@ -164,15 +164,92 @@ export function parseTorrentTitle(title: string): ParseResult {
   return { quality, codec, audio, ripType, languages, hasSubtitles, isBrowserNative };
 }
 
-async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
-  const jackettUrl = (process.env.JACKETT_URL || JACKETT_URL).replace(/\/+$/, '');
-  const jackettApiKey = process.env.JACKETT_API_KEY || JACKETT_API_KEY;
+interface ConfiguredIndexer {
+  id: string;
+  title: string;
+}
 
-  if (!jackettApiKey) {
-    throw new Error('Не указан JACKETT_API_KEY в файле .env на сервере');
+const INDEXERS_CACHE_TTL_MS = 5 * 60 * 1000;
+const DEAD_INDEXER_COOLDOWN_MS = 3 * 60 * 1000;
+let cachedIndexers: { list: ConfiguredIndexer[]; expiresAt: number } | null = null;
+const indexerCooldownUntil = new Map<string, number>();
+
+async function getConfiguredIndexers(
+  jackettUrl: string,
+  jackettApiKey: string
+): Promise<ConfiguredIndexer[] | null> {
+  const now = Date.now();
+  if (cachedIndexers && cachedIndexers.expiresAt > now) {
+    return cachedIndexers.list;
   }
 
-  const url = new URL(`${jackettUrl}/api/v2.0/indexers/all/results/torznab/api`);
+  try {
+    const url = new URL(`${jackettUrl}/api/v2.0/indexers/all/results/torznab/api`);
+    url.searchParams.append('apikey', jackettApiKey);
+    url.searchParams.append('t', 'indexers');
+    url.searchParams.append('configured', 'true');
+
+    const res = await fetch(url.toString(), {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) {
+      throw new Error(`Ошибка ответа Jackett: HTTP ${res.status} ${res.statusText}`);
+    }
+
+    const xmlText = await res.text();
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+    });
+    const xmlObj = parser.parse(xmlText);
+
+    if (xmlObj?.error) {
+      const desc = xmlObj.error['@_description'] || xmlObj.error['@_code'] || 'Invalid API Key';
+      throw new Error(`Jackett ошибка (${desc}). Проверьте JACKETT_API_KEY.`);
+    }
+
+    const rawIndexers = xmlObj?.indexers?.indexer;
+    if (!rawIndexers) {
+      // Succeeded, but 0 indexers configured
+      return [];
+    }
+
+    const listRaw = Array.isArray(rawIndexers) ? rawIndexers : [rawIndexers];
+    const list: ConfiguredIndexer[] = listRaw
+      .map((ix: any) => ({
+        id: String(ix?.['@_id'] || ''),
+        title: String(
+          typeof ix?.title === 'object' ? ix.title['#text'] || ix?.['@_id'] : ix?.title || ix?.['@_id'] || 'Indexer'
+        ),
+      }))
+      .filter((ix) => ix.id.length > 0);
+
+    cachedIndexers = {
+      list,
+      expiresAt: Date.now() + INDEXERS_CACHE_TTL_MS,
+    };
+    return list;
+  } catch (err: any) {
+    // Re-throw explicit API key / auth errors
+    if (err?.message?.includes('JACKETT_API_KEY') || err?.message?.includes('Jackett ошибка')) {
+      throw err;
+    }
+    console.warn('[Jackett] Failed to list configured indexers, falling back to /all:', err?.message);
+    return null;
+  }
+}
+
+async function fetchIndexerTorznab(
+  jackettUrl: string,
+  jackettApiKey: string,
+  indexerId: string,
+  defaultIndexerTitle: string,
+  searchQuery: string,
+  timeoutMs: number
+): Promise<TorrentItem[]> {
+  const url = new URL(`${jackettUrl}/api/v2.0/indexers/${encodeURIComponent(indexerId)}/results/torznab/api`);
   url.searchParams.append('apikey', jackettApiKey);
   url.searchParams.append('t', 'search');
   url.searchParams.append('q', searchQuery);
@@ -181,11 +258,11 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
   const res = await fetch(url.toString(), {
     headers: { Accept: 'application/json, text/xml, */*' },
     cache: 'no-store',
-    signal: AbortSignal.timeout(25000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {
-    throw new Error(`Ошибка ответа Jackett: HTTP ${res.status} ${res.statusText}`);
+    throw new Error(`Ошибка ответа Jackett (${defaultIndexerTitle}): HTTP ${res.status} ${res.statusText}`);
   }
 
   const contentType = res.headers.get('content-type') || '';
@@ -194,11 +271,10 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
   if (contentType.includes('application/json')) {
     const jsonData = await res.json();
     if (jsonData?.error) {
-      throw new Error(`Jackett API error: ${jsonData.error}`);
+      throw new Error(`Jackett API error (${defaultIndexerTitle}): ${jsonData.error}`);
     }
     rawResults = jsonData.Results || jsonData.items || [];
   } else {
-    // Parse Torznab XML fallback
     const xmlText = await res.text();
     const parser = new XMLParser({
       ignoreAttributes: false,
@@ -206,7 +282,6 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
     });
     const xmlObj = parser.parse(xmlText);
 
-    // Torznab returns HTTP 200 with <error code="..." description="..."/> on invalid API key or tracker error
     if (xmlObj?.error) {
       const desc = xmlObj.error['@_description'] || xmlObj.error['@_code'] || 'Unknown Torznab error';
       throw new Error(`Jackett ошибка (${desc}). Проверьте JACKETT_API_KEY и трекеры.`);
@@ -262,7 +337,7 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
           item.tracker ||
           item.indexer ||
           (typeof jackettIdx === 'string' ? jackettIdx : jackettIdx?.['#text']) ||
-          'Indexer'
+          defaultIndexerTitle
       );
 
       const parsed = parseTorrentTitle(title);
@@ -299,10 +374,85 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
     }
   }
 
-  console.log(`[Jackett] Query "${searchQuery}" -> ${parsedItems.length} results`);
+  return parsedItems;
+}
+
+async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
+  const jackettUrl = (process.env.JACKETT_URL || JACKETT_URL).replace(/\/+$/, '');
+  const jackettApiKey = process.env.JACKETT_API_KEY || JACKETT_API_KEY;
+
+  if (!jackettApiKey) {
+    throw new Error('Не указан JACKETT_API_KEY в файле .env на сервере');
+  }
+
+  const indexers = await getConfiguredIndexers(jackettUrl, jackettApiKey);
+
+  // If 0 indexers are configured in Jackett, warn the user immediately
+  if (indexers !== null && indexers.length === 0) {
+    throw new Error('В Jackett не добавлено ни одного трекера. Добавьте трекеры (например Rutor) в панели Jackett.');
+  }
+
+  // Fallback to aggregate 'all' if indexer listing failed
+  if (indexers === null) {
+    const items = await fetchIndexerTorznab(jackettUrl, jackettApiKey, 'all', 'Indexer', searchQuery, 35000);
+    return items.sort((a, b) => b.seeders - a.seeders);
+  }
+
+  // Query each configured indexer in parallel with independent 8s timeouts
+  // so 1 dead/blocked tracker cannot stall fast trackers like Rutor!
+  const now = Date.now();
+  const activeIndexers = indexers.filter((ix) => {
+    const until = indexerCooldownUntil.get(ix.id) || 0;
+    return until <= now;
+  });
+  const targetIndexers = activeIndexers.length > 0 ? activeIndexers : indexers;
+
+  const perIndexerTimeout = targetIndexers.length === 1 ? 18000 : 8000;
+
+  const settled = await Promise.allSettled(
+    targetIndexers.map((ix) =>
+      fetchIndexerTorznab(jackettUrl, jackettApiKey, ix.id, ix.title, searchQuery, perIndexerTimeout)
+    )
+  );
+
+  const combined: TorrentItem[] = [];
+  const seen = new Set<string>();
+  let successCount = 0;
+  let firstError: Error | null = null;
+
+  for (let i = 0; i < settled.length; i++) {
+    const result = settled[i];
+    const ix = targetIndexers[i];
+    if (result.status === 'fulfilled') {
+      successCount++;
+      indexerCooldownUntil.delete(ix.id);
+      for (const item of result.value) {
+        const key = (item.magnetUrl || item.link || item.title).toLowerCase().trim();
+        if (!seen.has(key)) {
+          seen.add(key);
+          combined.push(item);
+        }
+      }
+    } else {
+      console.warn(`[Jackett] Indexer "${ix.title}" (${ix.id}) failed/timed out:`, result.reason?.message || result.reason);
+      if (!firstError) {
+        firstError = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+      }
+      // Temporarily skip failing/hanging indexer only when multiple indexers exist
+      if (targetIndexers.length > 1) {
+        indexerCooldownUntil.set(ix.id, Date.now() + DEAD_INDEXER_COOLDOWN_MS);
+      }
+    }
+  }
+
+  if (successCount === 0 && firstError) {
+    throw firstError;
+  }
+
+  console.log(`[Jackett] Query "${searchQuery}" -> ${combined.length} results from ${successCount}/${targetIndexers.length} indexers`);
 
   // Sort by seeders descending (give priority to healthy torrents)
-  return parsedItems.sort((a, b) => b.seeders - a.seeders);
+  return combined.sort((a, b) => b.seeders - a.seeders);
 }
 
 export const jackett = {
