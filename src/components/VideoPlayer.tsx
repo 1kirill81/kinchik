@@ -17,7 +17,8 @@ import {
   Copy,
   Check,
 } from 'lucide-react';
-import { AudioTrackInfo, TorrServerLiveStats } from '@/types/torrent';
+import { AudioTrackInfo, SubtitleTrackOption, TorrServerLiveStats } from '@/types/torrent';
+import { pickPreferredSubtitleTrack } from '@/lib/utils';
 
 const ruI18n = {
   'Video Load Failed': 'Ошибка загрузки видео',
@@ -33,8 +34,66 @@ const ruI18n = {
   Default: 'По умолчанию',
   Normal: 'Обычная',
   Subtitle: 'Субтитры',
+  'Switch Subtitle': 'Субтитры',
   Audio: 'Аудио',
 };
+
+function parseVttTimeToSeconds(timestamp: string): number {
+  const parts = timestamp.trim().replace(',', '.').split(':');
+  if (parts.length === 3) {
+    return parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseFloat(parts[2]);
+  }
+  if (parts.length === 2) {
+    return parseInt(parts[0], 10) * 60 + parseFloat(parts[1]);
+  }
+  return 0;
+}
+
+function formatSecondsToVttTime(seconds: number): string {
+  const totalMs = Math.round(Math.max(0, seconds) * 1000);
+  const hrs = Math.floor(totalMs / 3600000);
+  const mins = Math.floor((totalMs % 3600000) / 60000);
+  const secs = Math.floor((totalMs % 60000) / 1000);
+  const ms = totalMs % 1000;
+  return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+}
+
+/**
+ * Shift WebVTT cue timestamps backwards when Remux playback starts at a non-zero -ss offset.
+ */
+function shiftVttTimestamps(vtt: string, offsetSeconds: number): string {
+  if (!offsetSeconds || offsetSeconds <= 0) return vtt;
+
+  const timingRegex =
+    /^(\s*(?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{2}:\d{2}[.,]\d{1,3})(.*)$/;
+
+  const blocks = vtt.split(/\r?\n\r?\n/);
+  const shiftedBlocks: string[] = [];
+
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/);
+    const timingLineIdx = lines.findIndex((line) => timingRegex.test(line));
+    if (timingLineIdx === -1) {
+      shiftedBlocks.push(block);
+      continue;
+    }
+
+    const match = lines[timingLineIdx].match(timingRegex);
+    if (!match) {
+      shiftedBlocks.push(block);
+      continue;
+    }
+
+    const startSec = parseVttTimeToSeconds(match[1]) - offsetSeconds;
+    const endSec = parseVttTimeToSeconds(match[2]) - offsetSeconds;
+    if (endSec <= 0) continue;
+
+    lines[timingLineIdx] = `${formatSecondsToVttTime(startSec)} --> ${formatSecondsToVttTime(endSec)}${match[3] || ''}`;
+    shiftedBlocks.push(lines.join('\n'));
+  }
+
+  return shiftedBlocks.join('\n\n');
+}
 
 interface VideoPlayerProps {
   streamUrl: string;
@@ -42,7 +101,9 @@ interface VideoPlayerProps {
   fileIndex?: number;
   title: string;
   poster?: string;
-  subtitles?: { url: string; label: string; default?: boolean }[];
+  subtitleTracks?: SubtitleTrackOption[];
+  activeSubtitleId?: string | null;
+  onSelectSubtitle?: (subtitleId: string | null) => void;
   initialTime?: number;
   remuxStartTime?: number;
   externalDuration?: number;
@@ -61,7 +122,9 @@ export default function VideoPlayer({
   fileIndex = 1,
   title,
   poster,
-  subtitles = [],
+  subtitleTracks = [],
+  activeSubtitleId = null,
+  onSelectSubtitle,
   initialTime = 0,
   remuxStartTime = 0,
   externalDuration = 0,
@@ -82,6 +145,11 @@ export default function VideoPlayer({
   const seekTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const streamUrlRef = useRef<string>(streamUrl);
   const onSelectAudioRef = useRef(onSelectAudioTrack);
+  const subtitleTracksRef = useRef<SubtitleTrackOption[]>(subtitleTracks);
+  const activeSubtitleIdRef = useRef<string | null>(activeSubtitleId);
+  const onSelectSubtitleRef = useRef(onSelectSubtitle);
+  const lastSubtitleIdRef = useRef<string | null>(activeSubtitleId);
+  const appliedSubtitleKeyRef = useRef<string>('');
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -91,6 +159,129 @@ export default function VideoPlayer({
   useEffect(() => {
     onSelectAudioRef.current = onSelectAudioTrack;
   }, [onSelectAudioTrack]);
+
+  useEffect(() => {
+    subtitleTracksRef.current = subtitleTracks;
+  }, [subtitleTracks]);
+
+  useEffect(() => {
+    activeSubtitleIdRef.current = activeSubtitleId;
+    if (activeSubtitleId) {
+      lastSubtitleIdRef.current = activeSubtitleId;
+    }
+  }, [activeSubtitleId]);
+
+  useEffect(() => {
+    onSelectSubtitleRef.current = onSelectSubtitle;
+  }, [onSelectSubtitle]);
+
+  const applySubtitleToArt = (
+    art: Artplayer,
+    track: SubtitleTrackOption | null,
+    forceReload = false
+  ) => {
+    if (!track) {
+      art.subtitle.show = false;
+      return;
+    }
+
+    const offset = remuxOffsetRef.current || 0;
+    const targetKey = `${track.url}|${offset}`;
+    art.subtitle.show = true;
+
+    if (!forceReload && appliedSubtitleKeyRef.current === targetKey) {
+      return;
+    }
+
+    appliedSubtitleKeyRef.current = targetKey;
+    art.subtitle
+      .switch(track.url, {
+        type: track.format,
+        name: track.label,
+        encoding: 'utf-8',
+        onVttLoad: (vtt: string) => shiftVttTimestamps(vtt, remuxOffsetRef.current),
+      })
+      .catch((err) => {
+        console.warn('Subtitle load error:', err);
+        appliedSubtitleKeyRef.current = '';
+        art.notice.show = 'Не удалось загрузить файл субтитров';
+      });
+  };
+
+  const syncSubtitleUiOnArt = (
+    art: Artplayer,
+    tracks: SubtitleTrackOption[],
+    activeId: string | null
+  ) => {
+    const activeTrack = tracks.find((t) => t.id === activeId) || null;
+    const isActive = Boolean(activeTrack);
+
+    try {
+      art.controls.update({
+        name: 'subtitle-toggle',
+        position: 'right',
+        index: 12,
+        html: `<span style="display:inline-flex;align-items:center;justify-content:center;padding:2px 6px;border-radius:5px;font-size:11px;font-weight:700;letter-spacing:0.04em;border:1px solid ${
+          isActive ? 'rgba(229,9,20,0.9)' : 'rgba(255,255,255,0.28)'
+        };background:${isActive ? 'rgba(229,9,20,0.85)' : 'rgba(255,255,255,0.08)'};color:${
+          isActive ? '#ffffff' : '#d4d4d8'
+        };">${isActive ? 'CC ON' : 'CC'}</span>`,
+        tooltip: isActive
+          ? `Выключить субтитры (${activeTrack?.language || 'SUB'})`
+          : 'Включить субтитры',
+        click() {
+          const currentId = activeSubtitleIdRef.current;
+          if (currentId) {
+            lastSubtitleIdRef.current = currentId;
+            onSelectSubtitleRef.current?.(null);
+            art.notice.show = 'Субтитры выключены';
+            return;
+          }
+
+          const preferred = pickPreferredSubtitleTrack(
+            subtitleTracksRef.current,
+            lastSubtitleIdRef.current
+          );
+
+          if (preferred) {
+            onSelectSubtitleRef.current?.(preferred.id);
+            art.notice.show = `Субтитры: ${preferred.language}`;
+          } else {
+            art.notice.show = 'Субтитры не найдены — выберите файл в меню сверху';
+          }
+        },
+      });
+    } catch {}
+
+    try {
+      art.setting.update({
+        name: 'subtitle-track',
+        width: 280,
+        html: 'Субтитры',
+        tooltip: activeTrack ? activeTrack.language : 'Выкл',
+        selector: [
+          {
+            default: !activeTrack,
+            html: 'Выкл (Без субтитров)',
+            value: '__off__',
+          },
+          ...tracks.map((track) => ({
+            default: track.id === activeId,
+            html: track.label,
+            value: track.id,
+          })),
+        ],
+        onSelect(item: any) {
+          if (item.value === '__off__') {
+            onSelectSubtitleRef.current?.(null);
+          } else if (typeof item.value === 'string') {
+            onSelectSubtitleRef.current?.(item.value);
+          }
+          return item.value === '__off__' ? 'Выкл' : item.html;
+        },
+      });
+    } catch {}
+  };
 
   // Sync external duration (from ffprobe / TMDB) into live Remux video proxy
   useEffect(() => {
@@ -134,6 +325,16 @@ export default function VideoPlayer({
       // ignore if setting panel is unmounted
     }
   }, [audioTracks, selectedAudioIndex]);
+
+  // Sync live subtitles list, active track & ON/OFF toggle into Artplayer
+  useEffect(() => {
+    const art = playerInstance.current;
+    if (!art) return;
+
+    syncSubtitleUiOnArt(art, subtitleTracks, activeSubtitleId);
+    const activeTrack = subtitleTracks.find((t) => t.id === activeSubtitleId) || null;
+    applySubtitleToArt(art, activeTrack);
+  }, [subtitleTracks, activeSubtitleId]);
 
   // Live stats from TorrServer
   const [stats, setStats] = useState<TorrServerLiveStats | null>(null);
@@ -252,6 +453,11 @@ export default function VideoPlayer({
         artOptions.proxy = function () {
           const video = document.createElement('video');
           video.playsInline = true;
+          const track = document.createElement('track');
+          track.default = true;
+          track.kind = 'metadata';
+          track.src = '';
+          video.appendChild(track);
 
           const nativeDurationDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
           const nativeCurrentTimeDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
@@ -315,6 +521,15 @@ export default function VideoPlayer({
                   video.src = u.pathname + u.search;
                   video.load();
                   video.play().catch(() => {});
+
+                  // Resync active subtitle timestamps to match the new Remux start offset
+                  const art = playerInstance.current;
+                  const activeTrack =
+                    subtitleTracksRef.current.find((t) => t.id === activeSubtitleIdRef.current) ||
+                    null;
+                  if (art && activeTrack) {
+                    applySubtitleToArt(art, activeTrack, true);
+                  }
                 } catch (err) {
                   console.error('Remux seek error:', err);
                 }
@@ -345,22 +560,37 @@ export default function VideoPlayer({
         };
       }
 
-      if (subtitles && subtitles.length > 0) {
-        artOptions.subtitle = {
-          url: subtitles[0].url,
-          type: 'vtt',
-          style: {
-            color: '#ffffff',
-            fontSize: '22px',
-            textShadow: '0 2px 4px rgba(0,0,0,0.9)',
-          },
-          encoding: 'utf-8',
-        };
-      }
+      // Configure subtitle renderer cleanly; actual track loading runs right after mount
+      artOptions.subtitle = {
+        url: '',
+        type: 'vtt',
+        style: {
+          color: '#ffffff',
+          fontSize: '22px',
+          textShadow: '0 2px 6px rgba(0,0,0,0.95)',
+        },
+        encoding: 'utf-8',
+        onVttLoad: (vtt: string) => shiftVttTimestamps(vtt, remuxOffsetRef.current),
+      };
 
       // Skip initial seek if Remux already started directly at remuxStartTime
       hasSeekedRef.current = isRemux && remuxStartTime > 0 && Math.abs(remuxStartTime - initialTime) <= 5;
+      appliedSubtitleKeyRef.current = '';
       const art = new Artplayer(artOptions);
+
+      // Keep Artplayer's $track bound to the proxied <video>'s live <track> in Remux mode
+      if (isRemux) {
+        const videoEl = art.template.$video as HTMLVideoElement | undefined;
+        const innerTrack = videoEl?.querySelector('track') as HTMLTrackElement | null;
+        if (innerTrack) {
+          (art.template as any).$track = innerTrack;
+        }
+      }
+
+      const initialSubTrack =
+        subtitleTracksRef.current.find((t) => t.id === activeSubtitleIdRef.current) || null;
+      syncSubtitleUiOnArt(art, subtitleTracksRef.current, activeSubtitleIdRef.current);
+      applySubtitleToArt(art, initialSubTrack, true);
 
       if (audioTracks && audioTracks.length > 0) {
         const currentTrack =

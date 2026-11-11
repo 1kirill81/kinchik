@@ -25,11 +25,20 @@ import {
   Volume2,
   ChevronDown,
   Languages,
+  Captions,
+  CaptionsOff,
+  Upload,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { TorrServerFile, TorrServerTorrent, ParsedEpisodeFile, AudioTrackInfo } from '@/types/torrent';
-import { formatBytes } from '@/lib/utils';
-import { isVideoFile, isSampleFile } from '@/lib/torrserver';
+import {
+  TorrServerFile,
+  TorrServerTorrent,
+  ParsedEpisodeFile,
+  AudioTrackInfo,
+  SubtitleTrackOption,
+} from '@/types/torrent';
+import { formatBytes, decodeSubtitleBytes, pickPreferredSubtitleTrack } from '@/lib/utils';
+import { isVideoFile, isSampleFile, isSubtitleFile, getSubtitleFormat } from '@/lib/torrserver';
 import { storage } from '@/lib/storage';
 import FavoriteButton from '@/components/FavoriteButton';
 
@@ -101,6 +110,77 @@ function parseEpisodeFromFile(file: { id: number; path: string; length: number }
   };
 }
 
+function inferSubtitleLanguage(path: string): string {
+  const lower = path.toLowerCase();
+  if (/(?:^|[\s._\-[])(rus|ru|russian)(?:$|[\s._\-\]])/i.test(lower) || /[а-яё]/i.test(path)) {
+    return 'RUS';
+  }
+  if (/(?:^|[\s._\-[])(eng|en|english)(?:$|[\s._\-\]])/i.test(lower)) {
+    return 'ENG';
+  }
+  if (/(?:^|[\s._\-[])(ukr|uk|ukrainian)(?:$|[\s._\-\]])/i.test(lower)) {
+    return 'UKR';
+  }
+  return 'SUB';
+}
+
+function getFileStem(filePath: string): string {
+  const base = filePath.split(/[/\\]/).pop() || filePath;
+  return base.replace(/\.[^/.]+$/, '').toLowerCase();
+}
+
+function buildTorrentSubtitleTracks(
+  rawFiles: TorrServerFile[],
+  hash: string,
+  currentIndex: number,
+  currentEpisodeInfo: ParsedEpisodeFile | null,
+  isSeriesPack: boolean
+): SubtitleTrackOption[] {
+  const subFiles = rawFiles.filter((f) => isSubtitleFile(f.path));
+  if (subFiles.length === 0) return [];
+
+  const activeVideoFile = rawFiles.find((f) => f.id === currentIndex);
+  const videoStem = activeVideoFile ? getFileStem(activeVideoFile.path) : '';
+
+  const scored = subFiles.map((file) => {
+    const subStem = getFileStem(file.path);
+    const stemMatch =
+      Boolean(videoStem) && (subStem === videoStem || subStem.startsWith(videoStem));
+    const parsed = parseEpisodeFromFile(file);
+    const epMatch =
+      Boolean(currentEpisodeInfo) &&
+      parsed.season === currentEpisodeInfo!.season &&
+      parsed.episode === currentEpisodeInfo!.episode;
+
+    return {
+      file,
+      score: stemMatch ? 2 : epMatch ? 1 : 0,
+    };
+  });
+
+  const matched = scored.filter((item) => item.score > 0);
+  const selected =
+    isSeriesPack && matched.length > 0
+      ? matched.sort((a, b) => b.score - a.score)
+      : scored.sort((a, b) => b.score - a.score).slice(0, 20);
+
+  return selected.map(({ file }) => {
+    const baseName = file.path.split(/[/\\]/).pop() || file.path;
+    const lang = inferSubtitleLanguage(file.path);
+    const shortName = baseName.length > 36 ? baseName.slice(0, 33) + '...' : baseName;
+
+    return {
+      id: `torrent-${file.id}`,
+      label: `${lang} • ${shortName}`,
+      language: lang,
+      url: `/api/subtitles/fetch?hash=${encodeURIComponent(hash)}&index=${file.id}&title=${encodeURIComponent(baseName)}`,
+      format: getSubtitleFormat(file.path),
+      source: 'torrent',
+      fileName: baseName,
+    };
+  });
+}
+
 export default function WatchClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -134,18 +214,37 @@ export default function WatchClient() {
   const audioMenuRef = useRef<HTMLDivElement>(null);
   const latestPlaybackTimeRef = useRef<number>(0);
 
+  // Subtitles state (torrent external files + online OpenSubtitles + local file upload)
+  const [onlineSubtitles, setOnlineSubtitles] = useState<SubtitleTrackOption[]>([]);
+  const [localSubtitles, setLocalSubtitles] = useState<SubtitleTrackOption[]>([]);
+  const [activeSubtitleId, setActiveSubtitleId] = useState<string | null>(null);
+  const [isLoadingSubtitles, setIsLoadingSubtitles] = useState(false);
+  const [isSubMenuOpen, setIsSubMenuOpen] = useState(false);
+  const subMenuRef = useRef<HTMLDivElement>(null);
+  const lastSelectedSubtitleIdRef = useRef<string | null>(null);
+  const localBlobUrlsRef = useRef<string[]>([]);
+
   // Active season tab for series
   const [activeSeason, setActiveSeason] = useState<number>(1);
 
-  // Close audio track dropdown on outside click
+  // Close audio and subtitle dropdowns on outside click
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (audioMenuRef.current && !audioMenuRef.current.contains(e.target as Node)) {
         setIsAudioMenuOpen(false);
       }
+      if (subMenuRef.current && !subMenuRef.current.contains(e.target as Node)) {
+        setIsSubMenuOpen(false);
+      }
     }
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      localBlobUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    };
   }, []);
 
   // Load files list from TorrServer for this torrent
@@ -322,6 +421,129 @@ export default function WatchClient() {
 
   const paramSeason = searchParams.get('season');
   const paramEpisode = searchParams.get('episode');
+
+  const seasonForSub =
+    currentEpisodeInfo?.season || (paramSeason ? parseInt(paramSeason, 10) : undefined);
+  const episodeForSub =
+    currentEpisodeInfo?.episode || (paramEpisode ? parseInt(paramEpisode, 10) : undefined);
+
+  // Clear non-local subtitle track when switching to another episode/file
+  useEffect(() => {
+    setActiveSubtitleId((prev) => (prev?.startsWith('local-') ? prev : null));
+  }, [hash, currentIndex]);
+
+  // Fetch matching online subtitles via TMDB IMDb ID -> OpenSubtitles
+  useEffect(() => {
+    if (!hash) return;
+
+    let cancelled = false;
+    setIsLoadingSubtitles(true);
+
+    const params = new URLSearchParams();
+    if (mediaId) params.set('mediaId', mediaId);
+    if (mediaType) params.set('mediaType', mediaType);
+    if (rawTitle) params.set('title', rawTitle);
+    if (seasonForSub) params.set('season', String(seasonForSub));
+    if (episodeForSub) params.set('episode', String(episodeForSub));
+
+    fetch(`/api/subtitles/search?${params.toString()}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.success && Array.isArray(data.subtitles)) {
+          setOnlineSubtitles(data.subtitles);
+        }
+      })
+      .catch((err) => console.warn('Subtitle search error:', err))
+      .finally(() => {
+        if (!cancelled) setIsLoadingSubtitles(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hash, currentIndex, mediaId, mediaType, rawTitle, seasonForSub, episodeForSub]);
+
+  const torrentSubtitles = useMemo(
+    () =>
+      buildTorrentSubtitleTracks(
+        torrentData?.file_stats || [],
+        hash,
+        currentIndex,
+        currentEpisodeInfo,
+        parsedEpisodes.length > 1
+      ),
+    [torrentData, hash, currentIndex, currentEpisodeInfo, parsedEpisodes.length]
+  );
+
+  const allSubtitleTracks = useMemo<SubtitleTrackOption[]>(
+    () => [...localSubtitles, ...torrentSubtitles, ...onlineSubtitles],
+    [localSubtitles, torrentSubtitles, onlineSubtitles]
+  );
+
+  const activeSubtitleTrack = useMemo(
+    () => allSubtitleTracks.find((t) => t.id === activeSubtitleId) || null,
+    [allSubtitleTracks, activeSubtitleId]
+  );
+
+  const handleSelectSubtitle = (subtitleId: string | null) => {
+    if (subtitleId) {
+      lastSelectedSubtitleIdRef.current = subtitleId;
+    }
+    setActiveSubtitleId(subtitleId);
+    setIsSubMenuOpen(false);
+  };
+
+  const handleQuickToggleSubtitles = () => {
+    if (activeSubtitleId) {
+      lastSelectedSubtitleIdRef.current = activeSubtitleId;
+      setActiveSubtitleId(null);
+      return;
+    }
+
+    const preferred = pickPreferredSubtitleTrack(
+      allSubtitleTracks,
+      lastSelectedSubtitleIdRef.current
+    );
+
+    if (preferred) {
+      lastSelectedSubtitleIdRef.current = preferred.id;
+      setActiveSubtitleId(preferred.id);
+    } else {
+      setIsSubMenuOpen(true);
+    }
+  };
+
+  const handleLocalSubtitleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const decoded = decodeSubtitleBytes(bytes);
+
+      const blobUrl = URL.createObjectURL(new Blob([decoded], { type: 'text/plain;charset=utf-8' }));
+      localBlobUrlsRef.current.push(blobUrl);
+
+      const newId = `local-${Date.now()}`;
+      const newTrack: SubtitleTrackOption = {
+        id: newId,
+        label: `Файл • ${file.name}`,
+        language: inferSubtitleLanguage(file.name),
+        url: blobUrl,
+        format: getSubtitleFormat(file.name),
+        source: 'local',
+        fileName: file.name,
+      };
+
+      setLocalSubtitles((prev) => [newTrack, ...prev]);
+      lastSelectedSubtitleIdRef.current = newId;
+      setActiveSubtitleId(newId);
+      setIsSubMenuOpen(false);
+    } catch (err) {
+      console.error('Failed to read local subtitle file:', err);
+    }
+  };
 
   // Load existing progress to resume playback
   const savedProgress = useMemo(() => {
@@ -570,6 +792,123 @@ export default function WatchClient() {
             </div>
           )}
 
+          {/* Subtitles ON/OFF Toggle & Track Switcher */}
+          <div ref={subMenuRef} className="relative">
+            <div className="inline-flex items-center rounded-lg bg-surface border border-white/10 text-[11px] sm:text-xs font-medium">
+              <button
+                onClick={handleQuickToggleSubtitles}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-l-lg transition-colors max-w-[140px] sm:max-w-[180px] ${
+                  activeSubtitleTrack
+                    ? 'bg-amber-500/20 text-amber-200 hover:bg-amber-500/30'
+                    : 'text-zinc-300 hover:bg-white/10 hover:text-white'
+                }`}
+                title={
+                  activeSubtitleTrack
+                    ? `Выключить субтитры (${activeSubtitleTrack.label})`
+                    : 'Включить субтитры'
+                }
+              >
+                {activeSubtitleTrack ? (
+                  <Captions className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                ) : (
+                  <CaptionsOff className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
+                )}
+                <span className="truncate">
+                  {activeSubtitleTrack ? `Суб: ${activeSubtitleTrack.language}` : 'Субтитры'}
+                </span>
+              </button>
+              <button
+                onClick={() => setIsSubMenuOpen(!isSubMenuOpen)}
+                className="px-1.5 py-1.5 rounded-r-lg border-l border-white/10 text-zinc-400 hover:text-white hover:bg-white/10 transition-colors"
+                title="Выбрать файл субтитров"
+                aria-label="Выбрать субтитры"
+              >
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform ${isSubMenuOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+            </div>
+
+            {isSubMenuOpen && (
+              <div className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-[min(19.5rem,calc(100vw-1.5rem))] bg-zinc-950/95 backdrop-blur-xl border border-white/15 rounded-xl shadow-2xl overflow-hidden z-50 divide-y divide-white/5">
+                <div className="px-3 py-2 bg-white/5 flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+                    <Captions className="w-3.5 h-3.5 text-amber-400" /> Субтитры ({allSubtitleTracks.length})
+                  </span>
+                  <label className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/15 text-[10px] font-semibold text-zinc-200 cursor-pointer transition-colors">
+                    <Upload className="w-3 h-3" />
+                    Загрузить .srt
+                    <input
+                      type="file"
+                      accept=".srt,.vtt,.ass,.ssa"
+                      onChange={handleLocalSubtitleUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
+                  <button
+                    onClick={() => handleSelectSubtitle(null)}
+                    className={`w-full text-left px-3 py-2.5 text-xs flex items-center justify-between gap-2 transition-colors ${
+                      !activeSubtitleId
+                        ? 'bg-primary/20 text-white font-semibold'
+                        : 'text-zinc-300 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <CaptionsOff className="w-3.5 h-3.5 text-zinc-400" />
+                      Выкл (Без субтитров)
+                    </span>
+                    {!activeSubtitleId && <Check className="w-3.5 h-3.5 text-primary flex-shrink-0" />}
+                  </button>
+
+                  {allSubtitleTracks.map((track) => {
+                    const isActive = track.id === activeSubtitleId;
+                    const sourceBadge =
+                      track.source === 'torrent'
+                        ? 'Раздача'
+                        : track.source === 'local'
+                          ? 'Файл'
+                          : 'Online';
+                    return (
+                      <button
+                        key={track.id}
+                        onClick={() => handleSelectSubtitle(track.id)}
+                        className={`w-full text-left px-3 py-2.5 text-xs flex items-center justify-between gap-2 transition-colors ${
+                          isActive
+                            ? 'bg-amber-500/20 text-white font-semibold'
+                            : 'text-zinc-300 hover:bg-white/10 hover:text-white'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 flex items-center gap-2">
+                          <span className="px-1.5 py-0.5 rounded bg-white/10 text-[10px] font-bold text-zinc-300 flex-shrink-0">
+                            {sourceBadge}
+                          </span>
+                          <span className="truncate">{track.label}</span>
+                        </div>
+                        {isActive && <Check className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />}
+                      </button>
+                    );
+                  })}
+
+                  {isLoadingSubtitles && (
+                    <div className="px-3 py-2.5 text-[11px] text-zinc-400 flex items-center gap-2">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      Поиск онлайн-субтитров...
+                    </div>
+                  )}
+
+                  {!isLoadingSubtitles && allSubtitleTracks.length === 0 && (
+                    <div className="px-3 py-3 text-[11px] text-zinc-500">
+                      Внешние субтитры не найдены. Вы можете загрузить файл .srt / .vtt / .ass кнопкой выше.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Mode Switcher: Direct P2P vs MP4 Remux */}
           <div className="flex items-center rounded-lg bg-surface border border-white/10 p-0.5 text-[11px] sm:text-xs ml-auto sm:ml-0">
             <button
@@ -615,6 +954,9 @@ export default function WatchClient() {
             fileIndex={currentIndex}
             title={rawTitle}
             poster={poster}
+            subtitleTracks={allSubtitleTracks}
+            activeSubtitleId={activeSubtitleId}
+            onSelectSubtitle={handleSelectSubtitle}
             initialTime={initialTime}
             remuxStartTime={remuxStartTime}
             externalDuration={mediaDuration}

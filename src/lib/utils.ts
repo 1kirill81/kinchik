@@ -44,7 +44,47 @@ export function formatRuntime(minutes?: number): string {
 /**
  * Extract 4-digit release year from date string (e.g. "2024-03-01" -> "2024")
  */
+import { SubtitleTrackOption } from '@/types/torrent';
+
 export function formatYear(dateStr?: string): string {
   if (!dateStr) return '';
   return dateStr.substring(0, 4);
+}
+
+/**
+ * Decode subtitle bytes cleanly to UTF-8, handling BOMs and CP1251 Cyrillic files.
+ */
+export function decodeSubtitleBytes(bytes: Uint8Array): string {
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder('utf-16le').decode(bytes.subarray(2));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder('utf-16be').decode(bytes.subarray(2));
+  }
+
+  const startOffset =
+    bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  const slice = startOffset > 0 ? bytes.subarray(startOffset) : bytes;
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(slice);
+  } catch {
+    return new TextDecoder('windows-1251').decode(slice);
+  }
+}
+
+/**
+ * Pick the best subtitle track when toggling subtitles ON quickly.
+ */
+export function pickPreferredSubtitleTrack(
+  tracks: SubtitleTrackOption[],
+  lastSelectedId?: string | null
+): SubtitleTrackOption | undefined {
+  return (
+    (lastSelectedId ? tracks.find((t) => t.id === lastSelectedId) : undefined) ||
+    tracks.find((t) => t.source === 'local') ||
+    tracks.find((t) => t.source === 'torrent' && t.language === 'RUS') ||
+    tracks.find((t) => t.language === 'RUS') ||
+    tracks[0]
+  );
 }

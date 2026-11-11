@@ -140,4 +140,19 @@ export const tmdb = {
       return null;
     }
   },
+
+  /**
+   * Get external IDs (e.g. IMDb ID) for movie or TV show
+   */
+  async getExternalIds(
+    id: string | number,
+    mediaType: 'movie' | 'tv'
+  ): Promise<{ imdb_id?: string | null } | null> {
+    try {
+      return await this.fetchTMDB<{ imdb_id?: string | null }>(`/${mediaType}/${id}/external_ids`);
+    } catch (e) {
+      console.error(`Failed to get external IDs for ${mediaType} ${id}:`, e);
+      return null;
+    }
+  },
 };

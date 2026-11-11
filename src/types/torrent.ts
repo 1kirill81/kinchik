@@ -118,3 +118,15 @@ export interface MediaProbeInfo {
   audioTracks: AudioTrackInfo[];
   defaultAudioIndex: number | null;
 }
+
+export type SubtitleFormat = 'vtt' | 'srt' | 'ass';
+
+export interface SubtitleTrackOption {
+  id: string;
+  label: string;
+  language: string;
+  url: string;
+  format: SubtitleFormat;
+  source: 'torrent' | 'opensubtitles' | 'local';
+  fileName?: string;
+}

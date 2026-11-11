@@ -16,6 +16,7 @@ import {
   Zap,
   Sparkles,
   Globe,
+  Captions,
 } from 'lucide-react';
 import { TorrentItem, VideoQuality } from '@/types/torrent';
 
@@ -56,7 +57,14 @@ export default function TorrentModal({
 
   // Filter state
   const [selectedQuality, setSelectedQuality] = useState<string>('all');
-  const [selectedLanguage, setSelectedLanguage] = useState<'all' | 'RUS' | 'ENG'>('all');
+  const [selectedLanguages, setSelectedLanguages] = useState<('RUS' | 'ENG')[]>([]);
+  const [requireSubtitles, setRequireSubtitles] = useState(false);
+
+  const toggleLanguageFilter = (lang: 'RUS' | 'ENG') => {
+    setSelectedLanguages((prev) =>
+      prev.includes(lang) ? prev.filter((item) => item !== lang) : [...prev, lang]
+    );
+  };
 
   // Custom Magnet State
   const [customMagnet, setCustomMagnet] = useState('');
@@ -166,7 +174,13 @@ export default function TorrentModal({
   if (!isOpen) return null;
 
   const filteredTorrents = torrents.filter((item) => {
-    if (selectedLanguage !== 'all' && !item.languages?.includes(selectedLanguage)) {
+    if (
+      selectedLanguages.length > 0 &&
+      !selectedLanguages.every((lang) => item.languages?.includes(lang))
+    ) {
+      return false;
+    }
+    if (requireSubtitles && !item.hasSubtitles) {
       return false;
     }
     if (selectedQuality === 'browser') return item.isBrowserNative;
@@ -241,10 +255,11 @@ export default function TorrentModal({
             <button
               onClick={() => {
                 setSelectedQuality('all');
-                setSelectedLanguage('all');
+                setSelectedLanguages([]);
+                setRequireSubtitles(false);
               }}
               className={`px-3 py-1 rounded-lg font-semibold transition-colors flex-shrink-0 whitespace-nowrap ${
-                selectedQuality === 'all' && selectedLanguage === 'all'
+                selectedQuality === 'all' && selectedLanguages.length === 0 && !requireSubtitles
                   ? 'bg-primary text-white shadow-glow-primary'
                   : 'bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white'
               }`}
@@ -265,21 +280,38 @@ export default function TorrentModal({
               <span>H.264</span>
             </button>
 
-            {/* Language quick filters */}
-            {(['RUS', 'ENG'] as const).map((lang) => (
-              <button
-                key={lang}
-                onClick={() => setSelectedLanguage(selectedLanguage === lang ? 'all' : lang)}
-                className={`px-2.5 py-1 rounded-lg font-bold transition-colors flex items-center gap-1 flex-shrink-0 whitespace-nowrap ${
-                  selectedLanguage === lang
-                    ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30'
-                    : 'bg-sky-950/40 text-sky-300 hover:bg-sky-900/40 border border-sky-500/30'
-                }`}
-              >
-                <Globe className="w-3 h-3" />
-                {lang}
-              </button>
-            ))}
+            {/* Multi-select language filters (e.g. RUS + ENG together) */}
+            {(['RUS', 'ENG'] as const).map((lang) => {
+              const isSelected = selectedLanguages.includes(lang);
+              return (
+                <button
+                  key={lang}
+                  onClick={() => toggleLanguageFilter(lang)}
+                  className={`px-2.5 py-1 rounded-lg font-bold transition-colors flex items-center gap-1 flex-shrink-0 whitespace-nowrap ${
+                    isSelected
+                      ? 'bg-sky-600 text-white shadow-md shadow-sky-600/30'
+                      : 'bg-sky-950/40 text-sky-300 hover:bg-sky-900/40 border border-sky-500/30'
+                  }`}
+                >
+                  <Globe className="w-3 h-3" />
+                  {lang}
+                </button>
+              );
+            })}
+
+            {/* Subtitles availability filter */}
+            <button
+              onClick={() => setRequireSubtitles((prev) => !prev)}
+              className={`px-2.5 py-1 rounded-lg font-bold transition-colors flex items-center gap-1 flex-shrink-0 whitespace-nowrap ${
+                requireSubtitles
+                  ? 'bg-amber-600 text-white shadow-md shadow-amber-600/30'
+                  : 'bg-amber-950/40 text-amber-300 hover:bg-amber-900/40 border border-amber-500/30'
+              }`}
+              title="Показать только раздачи с субтитрами"
+            >
+              <Captions className="w-3.5 h-3.5" />
+              SUB
+            </button>
 
             {['4K', '1080p', '720p'].map((q) => (
               <button

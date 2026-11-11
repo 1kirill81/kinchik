@@ -5,10 +5,23 @@ const TORRSERVER_INTERNAL_URL = (process.env.TORRSERVER_URL || 'http://localhost
 const TORRSERVER_PUBLIC_URL = (process.env.NEXT_PUBLIC_TORRSERVER_URL || 'http://localhost:8090').replace(/\/+$/, '');
 
 const VIDEO_EXTENSIONS = ['.mkv', '.mp4', '.avi', '.webm', '.ts', '.mov', '.m4v'];
+const SUBTITLE_EXTENSIONS = ['.srt', '.vtt', '.ass', '.ssa'];
 
 export function isVideoFile(path: string): boolean {
   const lower = path.toLowerCase();
   return VIDEO_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export function isSubtitleFile(path: string): boolean {
+  const lower = path.toLowerCase();
+  return SUBTITLE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export function getSubtitleFormat(path: string): 'vtt' | 'srt' | 'ass' {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.vtt')) return 'vtt';
+  if (lower.endsWith('.ass') || lower.endsWith('.ssa')) return 'ass';
+  return 'srt';
 }
 
 export function isSampleFile(path: string): boolean {
