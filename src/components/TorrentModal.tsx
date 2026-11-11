@@ -78,7 +78,7 @@ export default function TorrentModal({
   const handleSearchGeneral = () => {
     const base = mediaTitle || originalTitle || '';
     setQuery(base);
-    fetchTorrents(base);
+    fetchTorrents(base, originalTitle);
   };
 
   const handleSearchEnglish = () => {
@@ -88,16 +88,16 @@ export default function TorrentModal({
     }
   };
 
-  // Initial load
+  // Initial load: automatically query both localized title and originalTitle when available
   useEffect(() => {
     if (isOpen) {
       const defaultQuery = mediaTitle || originalTitle || '';
       setQuery(defaultQuery);
-      fetchTorrents(defaultQuery);
+      fetchTorrents(defaultQuery, originalTitle);
     }
-  }, [isOpen, mediaTitle, season, episode]);
+  }, [isOpen, mediaTitle, originalTitle, season, episode]);
 
-  const fetchTorrents = async (searchQuery: string) => {
+  const fetchTorrents = async (searchQuery: string, altSearchQuery?: string) => {
     if (!searchQuery.trim()) return;
     setIsLoading(true);
     setError(null);
@@ -106,6 +106,13 @@ export default function TorrentModal({
       const params = new URLSearchParams({
         q: searchQuery,
       });
+      if (
+        altSearchQuery &&
+        altSearchQuery.trim() &&
+        altSearchQuery.trim().toLowerCase() !== searchQuery.trim().toLowerCase()
+      ) {
+        params.append('altQuery', altSearchQuery.trim());
+      }
       if (year) params.append('year', year);
       if (season) params.append('season', String(season));
       if (episode) params.append('episode', String(episode));
@@ -173,20 +180,126 @@ export default function TorrentModal({
 
   if (!isOpen) return null;
 
-  const filteredTorrents = torrents.filter((item) => {
-    if (
-      selectedLanguages.length > 0 &&
-      !selectedLanguages.every((lang) => item.languages?.includes(lang))
-    ) {
-      return false;
+  const filterTorrentsList = (
+    items: TorrentItem[],
+    opts: {
+      quality: string;
+      languages: ('RUS' | 'ENG')[];
+      subtitles: boolean;
+      matchAnyLang?: boolean;
     }
-    if (requireSubtitles && !item.hasSubtitles) {
-      return false;
-    }
-    if (selectedQuality === 'browser') return item.isBrowserNative;
-    if (selectedQuality === 'all') return true;
-    return item.quality === selectedQuality;
+  ) => {
+    return items.filter((item) => {
+      if (opts.languages.length > 0) {
+        const langMatch = opts.matchAnyLang
+          ? opts.languages.some((lang) => item.languages?.includes(lang))
+          : opts.languages.every((lang) => item.languages?.includes(lang));
+        if (!langMatch) return false;
+      }
+      if (opts.subtitles && !item.hasSubtitles) {
+        return false;
+      }
+      if (opts.quality === 'browser') return item.isBrowserNative;
+      if (opts.quality === 'all') return true;
+      return item.quality === opts.quality;
+    });
+  };
+
+  const filteredTorrents = filterTorrentsList(torrents, {
+    quality: selectedQuality,
+    languages: selectedLanguages,
+    subtitles: requireSubtitles,
   });
+
+  const hasActiveFilters =
+    selectedQuality !== 'all' || selectedLanguages.length > 0 || requireSubtitles;
+
+  const resetAllFilters = () => {
+    setSelectedQuality('all');
+    setSelectedLanguages([]);
+    setRequireSubtitles(false);
+  };
+
+  // Pre-compute helpful counts when active filters hide almost everything
+  const withoutH264Count =
+    selectedQuality === 'browser'
+      ? filterTorrentsList(torrents, {
+          quality: 'all',
+          languages: selectedLanguages,
+          subtitles: requireSubtitles,
+        }).length
+      : 0;
+  const withoutSubCount = requireSubtitles
+    ? filterTorrentsList(torrents, {
+        quality: selectedQuality,
+        languages: selectedLanguages,
+        subtitles: false,
+      }).length
+    : 0;
+  const onlyRusCount =
+    selectedLanguages.length > 1
+      ? filterTorrentsList(torrents, {
+          quality: selectedQuality,
+          languages: ['RUS'],
+          subtitles: requireSubtitles,
+        }).length
+      : 0;
+  const onlyEngCount =
+    selectedLanguages.length > 1
+      ? filterTorrentsList(torrents, {
+          quality: selectedQuality,
+          languages: ['ENG'],
+          subtitles: requireSubtitles,
+        }).length
+      : 0;
+  const showFilterHintBanner =
+    hasActiveFilters &&
+    filteredTorrents.length > 0 &&
+    filteredTorrents.length <= 4 &&
+    torrents.length > filteredTorrents.length;
+
+  const renderFilterRelaxButtons = (centered = false) => (
+    <div className={`flex flex-wrap gap-1.5 ${centered ? 'justify-center pt-1 max-w-lg' : ''}`}>
+      {selectedQuality === 'browser' && withoutH264Count > filteredTorrents.length && (
+        <button
+          onClick={() => setSelectedQuality('all')}
+          className="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/30 text-emerald-200 text-xs font-semibold transition-colors"
+        >
+          Без H.264 / MP4 Ремукс ({withoutH264Count})
+        </button>
+      )}
+      {requireSubtitles && withoutSubCount > filteredTorrents.length && (
+        <button
+          onClick={() => setRequireSubtitles(false)}
+          className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/30 text-amber-200 text-xs font-semibold transition-colors"
+        >
+          Без метки SUB ({withoutSubCount})
+        </button>
+      )}
+      {selectedLanguages.length > 1 && onlyRusCount > filteredTorrents.length && (
+        <button
+          onClick={() => setSelectedLanguages(['RUS'])}
+          className="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-200 text-xs font-semibold transition-colors"
+        >
+          Только RUS ({onlyRusCount})
+        </button>
+      )}
+      {selectedLanguages.length > 1 && onlyEngCount > filteredTorrents.length && (
+        <button
+          onClick={() => setSelectedLanguages(['ENG'])}
+          className="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/30 text-sky-200 text-xs font-semibold transition-colors"
+        >
+          Только ENG ({onlyEngCount})
+        </button>
+      )}
+      <button
+        onClick={resetAllFilters}
+        className="px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-colors"
+      >
+        Сбросить фильтры (все {torrents.length})
+      </button>
+    </div>
+  );
 
   return (
     <div
@@ -226,7 +339,9 @@ export default function TorrentModal({
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              fetchTorrents(query);
+              const isDefaultTitle =
+                query.trim().toLowerCase() === (mediaTitle || '').trim().toLowerCase();
+              fetchTorrents(query, isDefaultTitle ? originalTitle : undefined);
             }}
             className="flex gap-2"
           >
@@ -328,13 +443,34 @@ export default function TorrentModal({
             ))}
 
             <span className="ml-auto pl-2 text-zinc-500 flex-shrink-0 whitespace-nowrap">
-              Найдено: <b className="text-zinc-300">{filteredTorrents.length}</b>
+              {hasActiveFilters && torrents.length !== filteredTorrents.length ? (
+                <>
+                  Показано: <b className="text-zinc-200">{filteredTorrents.length}</b> из{' '}
+                  <b className="text-zinc-400">{torrents.length}</b>
+                </>
+              ) : (
+                <>
+                  Найдено: <b className="text-zinc-300">{filteredTorrents.length}</b>
+                </>
+              )}
             </span>
           </div>
         </div>
 
         {/* Content list or Loading/Error State */}
         <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2.5 sm:space-y-3 min-h-[260px]">
+          {!isLoading && !isPreparing && !error && showFilterHintBanner && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-xs text-zinc-200 space-y-2">
+              <p className="leading-relaxed text-zinc-300">
+                На трекерах найдено <b className="text-white">{torrents.length}</b> раздач, но
+                активные фильтры оставили <b className="text-amber-300">{filteredTorrents.length}</b>{' '}
+                (релизы редко содержат все метки одновременно в названии; субтитры загружаются
+                автоматически внутри плеера, а MKV работает через MP4 Ремукс).
+              </p>
+              {renderFilterRelaxButtons(false)}
+            </div>
+          )}
+
           {isPreparing ? (
             <div className="flex flex-col items-center justify-center h-full py-12 sm:py-16 px-4 text-center space-y-4">
               <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-4 border-primary border-t-transparent animate-spin flex items-center justify-center">
@@ -364,38 +500,63 @@ export default function TorrentModal({
               <div className="w-12 h-12 rounded-2xl bg-white/5 flex items-center justify-center text-zinc-500">
                 <FileVideo className="w-6 h-6" />
               </div>
-              <div>
-                <p className="text-sm font-bold text-white">Раздачи не найдены</p>
-                <p className="text-xs text-zinc-400 mt-1 max-w-sm">
-                  Сериалы на трекерах чаще всего выкладывают <b>полными сезонами (паками)</b>, а не отдельными сериями.
-                </p>
-              </div>
-
-              {/* Helpful quick actions */}
-              <div className="flex flex-wrap items-center justify-center gap-2 pt-1 max-w-md">
-                <button
-                  onClick={handleSearchGeneral}
-                  className="px-3.5 py-2 rounded-xl bg-primary text-white text-xs font-semibold shadow-glow-primary hover:bg-primary-hover transition-colors"
-                >
-                  Искать сериал целиком
-                </button>
-
-                {originalTitle && originalTitle !== mediaTitle && (
+              {torrents.length > 0 && hasActiveFilters ? (
+                <>
+                  <div>
+                    <p className="text-sm font-bold text-white">
+                      Под выбранные фильтры ничего не подошло
+                    </p>
+                    <p className="text-xs text-zinc-400 mt-1 max-w-md">
+                      На трекерах найдено <b>{torrents.length}</b> раздач, но одновременные
+                      фильтры их скрыли (субтитры загружаются в плеере, а MKV работает через MP4
+                      Ремукс):
+                    </p>
+                  </div>
+                  {renderFilterRelaxButtons(true)}
                   <button
-                    onClick={handleSearchEnglish}
-                    className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors border border-white/10"
+                    onClick={() => setShowMagnetInput(!showMagnetInput)}
+                    className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-medium transition-colors border border-white/5"
                   >
-                    По названию «{originalTitle}»
+                    {showMagnetInput ? 'Скрыть ввод ссылки' : 'Вставить Magnet-ссылку'}
                   </button>
-                )}
+                </>
+              ) : (
+                <>
+                  <div>
+                    <p className="text-sm font-bold text-white">Раздачи не найдены</p>
+                    <p className="text-xs text-zinc-400 mt-1 max-w-sm">
+                      Сериалы на трекерах чаще всего выкладывают <b>полными сезонами (паками)</b>, а
+                      не отдельными сериями.
+                    </p>
+                  </div>
 
-                <button
-                  onClick={() => setShowMagnetInput(!showMagnetInput)}
-                  className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-medium transition-colors border border-white/5"
-                >
-                  {showMagnetInput ? 'Скрыть ввод ссылки' : 'Вставить Magnet-ссылку'}
-                </button>
-              </div>
+                  {/* Helpful quick actions */}
+                  <div className="flex flex-wrap items-center justify-center gap-2 pt-1 max-w-md">
+                    <button
+                      onClick={handleSearchGeneral}
+                      className="px-3.5 py-2 rounded-xl bg-primary text-white text-xs font-semibold shadow-glow-primary hover:bg-primary-hover transition-colors"
+                    >
+                      Искать сериал целиком
+                    </button>
+
+                    {originalTitle && originalTitle !== mediaTitle && (
+                      <button
+                        onClick={handleSearchEnglish}
+                        className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-medium transition-colors border border-white/10"
+                      >
+                        По названию «{originalTitle}»
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => setShowMagnetInput(!showMagnetInput)}
+                      className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-zinc-300 text-xs font-medium transition-colors border border-white/5"
+                    >
+                      {showMagnetInput ? 'Скрыть ввод ссылки' : 'Вставить Magnet-ссылку'}
+                    </button>
+                  </div>
+                </>
+              )}
 
               {showMagnetInput && (
                 <div className="w-full max-w-md p-3 rounded-xl bg-black/60 border border-white/10 space-y-2 mt-2">

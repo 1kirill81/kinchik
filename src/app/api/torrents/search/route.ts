@@ -1,15 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { jackett } from '@/lib/jackett';
+import { jackett, mergeUniqueTorrents } from '@/lib/jackett';
 import { TorrentItem } from '@/types/torrent';
 
 export const dynamic = 'force-dynamic';
 
 function scoreTorrentRelevance(
   item: TorrentItem,
-  opts: { year?: string; season?: number; episode?: number }
+  opts: { query?: string; altQuery?: string; year?: string; season?: number; episode?: number }
 ): number {
   const title = item.title.toLowerCase();
   let score = 0;
+
+  if (item.seeders > 0) {
+    score += 250;
+  }
+
+  const queries = [opts.query, opts.altQuery]
+    .filter((q): q is string => Boolean(q && q.trim().length >= 2))
+    .map((q) => q.trim().toLowerCase());
+  if (queries.some((q) => title.includes(q))) {
+    score += 80;
+  }
 
   if (opts.season && opts.episode) {
     const s = String(opts.season).padStart(2, '0');
@@ -37,8 +48,23 @@ function scoreTorrentRelevance(
     }
   }
 
-  if (opts.year && title.includes(opts.year)) {
-    score += 100;
+  if (opts.year) {
+    if (title.includes(opts.year)) {
+      score += 150;
+    } else {
+      const targetYear = parseInt(opts.year, 10);
+      const hasSeasonTag = /\bs0?\d{1,2}\b|season\s*\d+|сезон\s*\d+/i.test(title);
+      if (!hasSeasonTag && Number.isFinite(targetYear)) {
+        const yearMatches = title.match(/(?:\(|\[|\b)(19\d{2}|20\d{2})(?:\)|\]|\b)/g);
+        if (yearMatches && yearMatches.length > 0) {
+          const parsedYears = yearMatches.map((m) => parseInt(m.replace(/\D/g, ''), 10));
+          const closeMatch = parsedYears.some((y) => Math.abs(y - targetYear) <= 1);
+          if (!closeMatch) {
+            score -= 400;
+          }
+        }
+      }
+    }
   }
 
   return score;
@@ -46,7 +72,7 @@ function scoreTorrentRelevance(
 
 function rankTorrents(
   items: TorrentItem[],
-  opts: { year?: string; season?: number; episode?: number }
+  opts: { query?: string; altQuery?: string; year?: string; season?: number; episode?: number }
 ): TorrentItem[] {
   return [...items].sort((a, b) => {
     const scoreDiff = scoreTorrentRelevance(b, opts) - scoreTorrentRelevance(a, opts);
@@ -59,6 +85,11 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const query = searchParams.get('q')?.trim();
+    const rawAltQuery = searchParams.get('altQuery')?.trim();
+    const altQuery =
+      rawAltQuery && query && rawAltQuery.toLowerCase() !== query.toLowerCase()
+        ? rawAltQuery
+        : undefined;
     const year = searchParams.get('year') || undefined;
     const seasonParam = searchParams.get('season');
     const episodeParam = searchParams.get('episode');
@@ -69,27 +100,41 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Query parameter "q" is required' }, { status: 400 });
     }
 
-    let items: TorrentItem[] = [];
+    const searchQueries = [query];
+    if (altQuery) searchQueries.push(altQuery);
 
-    // Use a single Jackett query to avoid overloading/rate-limiting trackers
-    if (season && episode) {
-      items = await jackett.search(query);
-      if (items.length === 0) {
-        const s = String(season).padStart(2, '0');
-        const e = String(episode).padStart(2, '0');
-        items = await jackett.search(`${query} s${s}e${e}`);
+    const settled = await Promise.allSettled(
+      searchQueries.map((qText) =>
+        year && qText.length < 5 && !season ? jackett.search(qText, year) : jackett.search(qText)
+      )
+    );
+
+    const fulfilledLists: TorrentItem[][] = [];
+    let firstError: unknown = null;
+    for (const res of settled) {
+      if (res.status === 'fulfilled') {
+        fulfilledLists.push(res.value);
+      } else if (!firstError) {
+        firstError = res.reason;
       }
-    } else if (year && query.length < 5) {
-      // Very short movie titles (e.g. "Оно") benefit from year narrowing first
-      items = await jackett.search(query, year);
-      if (items.length === 0) {
-        items = await jackett.search(query);
-      }
-    } else {
+    }
+
+    if (fulfilledLists.length === 0 && firstError) {
+      throw firstError;
+    }
+
+    let items = mergeUniqueTorrents(fulfilledLists);
+
+    // Fallback: if single-query series title returned nothing, try appending SxxExx
+    if (items.length === 0 && season && episode) {
+      const s = String(season).padStart(2, '0');
+      const e = String(episode).padStart(2, '0');
+      items = await jackett.search(`${query} s${s}e${e}`);
+    } else if (items.length === 0 && year && query.length < 5) {
       items = await jackett.search(query);
     }
 
-    const rankedItems = rankTorrents(items, { year, season, episode });
+    const rankedItems = rankTorrents(items, { query, altQuery, year, season, episode });
 
     return NextResponse.json({
       success: true,

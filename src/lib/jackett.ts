@@ -24,14 +24,19 @@ export function extractTorrentLanguages(title: string, fallbackLangAttr?: string
   hasSubtitles: boolean;
 } {
   const langs = new Set<string>();
-  const hasSubtitles = /\bsubs?\b|субтитр/i.test(title);
   const combined = `${title} ${fallbackLangAttr || ''}`;
+  const hasSubtitles =
+    /(?:^|[\s._(\[/+\-|:,])(?:rus|ru|eng|en|multi|soft|hard|full|forced|2x|3x|e|jap|chi)?subs?(?:$|[\s._)\]/+\-|:,])|\bsubtitles?\b|\bmultisubs?\b|\besubs?\b|субтитр|(?<![а-яё])суб(?=\.|[\s)\]/+,;-]|$)|(?<![а-яё])сабы\b/i.test(
+      combined
+    );
 
-  // Strip subtitle-only language markers (e.g. "RUS Sub", "ENG Sub") so we don't confuse subtitle lang with audio lang
+  // Strip subtitle-only language markers so subtitle tags aren't mistaken for spoken audio tracks
   const audioOnlyText = combined
+    .replace(/\[?\bsubs?(?:titles?)?\s*[:(\[]?\s*(?:rus|ru|eng|en|рус\w*|анг\w*|[\s,+/&])+\]?/gi, '')
     .replace(/\b(rus|ru|рус\.?)\s*(sub|subs|суб|субтитр\w*)/gi, '')
     .replace(/\b(eng|en|анг\.?)\s*(sub|subs|суб|субтитр\w*)/gi, '')
-    .replace(/субтитр\w*\s*[:(\[]?\s*(rus|ru|рус\w*|eng|en)/gi, '');
+    .replace(/субтитр\w*\s*[:(\[]?\s*(?:rus|ru|рус\w*|eng|en|анг\w*|[\s,+/&])+/gi, '')
+    .replace(/\b(engsub|russub|multisub|esub|softsub|hardsub)s?\b/gi, '');
 
   const hasRussianStudioOrDub =
     /дубляж|\bdub\b|дублирован|lostfilm|лостфильм|кубик|kubik|hdrezka|rezka|newstudio|alexfilm|novafilm|пифагор|кравец|kravec|рен-тв|ren-tv|мосфильм|невафильм|rhs|red head sound|jaskier|сыендук|anilibria|coldfilm|baibako|omskbird|гоблин|goblin|многоголос|двухголос|одноголос|закадр|\bmvo\b|\bdvo\b|\bavo\b|\bпмо\b|\bлм\b|\bлд\b|\|\s*[dpm](?:\s|,|$)|\brus\b|\bru\b|русск|(?<![a-z])рус(?![a-z])/i.test(
@@ -49,7 +54,7 @@ export function extractTorrentLanguages(title: string, fallbackLangAttr?: string
   }
 
   const hasEnglishTag =
-    /\beng\b|\benglish\b|английск|\borig\b|\boriginal\b|оригинал|\bmulti\b|\bdual\b/i.test(
+    /\beng\w*|\benglish\b|(?<![а-яё])анг\w*|\borig(?:inal)?\b|оригинал|\bmulti\b|\bdual(?:\s*-?\s*audio)?\b/i.test(
       audioOnlyText
     );
 
@@ -72,20 +77,38 @@ export function extractTorrentLanguages(title: string, fallbackLangAttr?: string
 }
 
 /**
+ * Detect obvious non-video releases (PC games, books, audio OSTs) leaked by mixed indexers.
+ */
+function isNonVideoRelease(title: string): boolean {
+  const hasVideoTag =
+    /(?:web-?dl|web-?rip|bdrip|bdremux|hdtv|camrip|x264|x265|hevc|avc|1080[pр]?|720[pр]?|2160[pр]?)/i.test(
+      title
+    );
+  if (hasVideoTag) return false;
+  return (
+    /(?:^|[\s(\[/|])(repack[- ]fitgirl|pc\s*game|ps[345]|xbox|nintendo switch|fb2|epub|djvu|audiobook)(?:$|[\s)\]/,|])/i.test(
+      title
+    ) ||
+    /\(\d{4}\)\s*pc\b/i.test(title) ||
+    /mp3,\s*\d+\s*кбит/i.test(title)
+  );
+}
+
+/**
  * Intelligent regex parser to extract quality, audio dubbing, rip type, codec and browser compatibility from torrent title
  */
 export function parseTorrentTitle(title: string): ParseResult {
   const t = title.toLowerCase();
 
-  // 1. Resolution / Quality
+  // 1. Resolution / Quality (handles Latin p and Cyrillic р, plus bare 1080/720 in [WEB-DL 1080])
   let quality: VideoQuality = 'Unknown';
-  if (/2160p|4k|uhd/i.test(title)) {
+  if (/2160[pр]?|\b4k\b|uhd/i.test(title)) {
     quality = '4K';
-  } else if (/1080p|1080i|fhd/i.test(title)) {
+  } else if (/(?:^|[\s._(\[/\-|])1080[pрi]?(?:$|[\s._)\]/\-|])|\bfhd\b/i.test(title)) {
     quality = '1080p';
-  } else if (/720p|hd\b/i.test(title)) {
+  } else if (/(?:^|[\s._(\[/\-|])720[pр]?(?:$|[\s._)\]/\-|])|\bhd\b/i.test(title)) {
     quality = '720p';
-  } else if (/480p|576p|dvd\b|dvdrip/i.test(title)) {
+  } else if (/(?:^|[\s._(\[/\-|])(?:480|576)[pр]?(?:$|[\s._)\]/\-|])|\bdvd(?:rip)?\b/i.test(title)) {
     quality = '480p';
   }
 
@@ -169,10 +192,53 @@ interface ConfiguredIndexer {
   title: string;
 }
 
-const INDEXERS_CACHE_TTL_MS = 5 * 60 * 1000;
-const DEAD_INDEXER_COOLDOWN_MS = 3 * 60 * 1000;
+const INDEXERS_CACHE_TTL_MS = 10 * 60 * 1000;
+const DEAD_INDEXER_COOLDOWN_MS = 4 * 60 * 1000;
+const BLOCKED_INDEXER_COOLDOWN_MS = 15 * 60 * 1000;
+const JACKETT_CONCURRENCY_LIMIT = 10;
+
+// Skip trackers that strictly host games, audiobooks, audio software, or XXX adult content
+const NON_VIDEO_INDEXERS = new Set([
+  'audiobookbay',
+  'vsthouse',
+  'pctorrent',
+  'byrutor',
+  'catorrent',
+  'opensharing',
+  'torrent-pirat',
+  '0magnet',
+  'sosulki',
+  'rintornet',
+  'torrentby',
+]);
+
 let cachedIndexers: { list: ConfiguredIndexer[]; expiresAt: number } | null = null;
 const indexerCooldownUntil = new Map<string, number>();
+
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const idx = nextIndex++;
+      if (idx >= items.length) break;
+      try {
+        const value = await worker(items[idx]);
+        results[idx] = { status: 'fulfilled', value };
+      } catch (reason) {
+        results[idx] = { status: 'rejected', reason };
+      }
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
+}
 
 async function getConfiguredIndexers(
   jackettUrl: string,
@@ -191,7 +257,7 @@ async function getConfiguredIndexers(
 
     const res = await fetch(url.toString(), {
       cache: 'no-store',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!res.ok) {
@@ -212,19 +278,31 @@ async function getConfiguredIndexers(
 
     const rawIndexers = xmlObj?.indexers?.indexer;
     if (!rawIndexers) {
-      // Succeeded, but 0 indexers configured
       return [];
     }
 
     const listRaw = Array.isArray(rawIndexers) ? rawIndexers : [rawIndexers];
     const list: ConfiguredIndexer[] = listRaw
-      .map((ix: any) => ({
-        id: String(ix?.['@_id'] || ''),
-        title: String(
-          typeof ix?.title === 'object' ? ix.title['#text'] || ix?.['@_id'] : ix?.title || ix?.['@_id'] || 'Indexer'
-        ),
-      }))
-      .filter((ix) => ix.id.length > 0);
+      .map((ix: any) => {
+        const id = String(ix?.['@_id'] || '');
+        const catsRaw = ix?.caps?.categories?.category;
+        const catsList = Array.isArray(catsRaw) ? catsRaw : catsRaw ? [catsRaw] : [];
+        const hasVideoCat =
+          catsList.length === 0 ||
+          catsList.some((c: any) => {
+            const catId = String(c?.['@_id'] || '');
+            return catId === '2000' || catId === '5000';
+          });
+        return {
+          id,
+          title: String(
+            typeof ix?.title === 'object' ? ix.title['#text'] || id : ix?.title || id || 'Indexer'
+          ),
+          hasVideoCat,
+        };
+      })
+      .filter((ix) => ix.id.length > 0 && ix.hasVideoCat && !NON_VIDEO_INDEXERS.has(ix.id))
+      .map(({ id, title }) => ({ id, title }));
 
     cachedIndexers = {
       list,
@@ -232,9 +310,12 @@ async function getConfiguredIndexers(
     };
     return list;
   } catch (err: any) {
-    // Re-throw explicit API key / auth errors
     if (err?.message?.includes('JACKETT_API_KEY') || err?.message?.includes('Jackett ошибка')) {
       throw err;
+    }
+    if (cachedIndexers && cachedIndexers.list.length > 0) {
+      console.warn('[Jackett] Using stale cached indexers list after refresh error:', err?.message);
+      return cachedIndexers.list;
     }
     console.warn('[Jackett] Failed to list configured indexers, falling back to /all:', err?.message);
     return null;
@@ -304,6 +385,8 @@ async function fetchIndexerTorznab(
         typeof rawTitle === 'object' && rawTitle !== null
           ? String(rawTitle['#text'] ?? 'Unknown Title')
           : String(rawTitle);
+
+      if (isNonVideoRelease(title)) continue;
 
       const size = Number(item.Size ?? item.size ?? item['@_length'] ?? 0) || 0;
 
@@ -377,6 +460,21 @@ async function fetchIndexerTorznab(
   return parsedItems;
 }
 
+export function mergeUniqueTorrents(lists: TorrentItem[][]): TorrentItem[] {
+  const seen = new Set<string>();
+  const merged: TorrentItem[] = [];
+  for (const list of lists) {
+    for (const item of list) {
+      const key = (item.magnetUrl || item.link || item.title).toLowerCase().trim();
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(item);
+      }
+    }
+  }
+  return merged;
+}
+
 async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
   const jackettUrl = (process.env.JACKETT_URL || JACKETT_URL).replace(/\/+$/, '');
   const jackettApiKey = process.env.JACKETT_API_KEY || JACKETT_API_KEY;
@@ -409,14 +507,11 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
 
   const perIndexerTimeout = targetIndexers.length === 1 ? 18000 : 8000;
 
-  const settled = await Promise.allSettled(
-    targetIndexers.map((ix) =>
-      fetchIndexerTorznab(jackettUrl, jackettApiKey, ix.id, ix.title, searchQuery, perIndexerTimeout)
-    )
+  const settled = await runWithConcurrency(targetIndexers, JACKETT_CONCURRENCY_LIMIT, (ix) =>
+    fetchIndexerTorznab(jackettUrl, jackettApiKey, ix.id, ix.title, searchQuery, perIndexerTimeout)
   );
 
-  const combined: TorrentItem[] = [];
-  const seen = new Set<string>();
+  const fulfilledLists: TorrentItem[][] = [];
   let successCount = 0;
   let firstError: Error | null = null;
 
@@ -426,24 +521,23 @@ async function fetchJackettRaw(searchQuery: string): Promise<TorrentItem[]> {
     if (result.status === 'fulfilled') {
       successCount++;
       indexerCooldownUntil.delete(ix.id);
-      for (const item of result.value) {
-        const key = (item.magnetUrl || item.link || item.title).toLowerCase().trim();
-        if (!seen.has(key)) {
-          seen.add(key);
-          combined.push(item);
-        }
-      }
+      fulfilledLists.push(result.value);
     } else {
-      console.warn(`[Jackett] Indexer "${ix.title}" (${ix.id}) failed/timed out:`, result.reason?.message || result.reason);
+      const errMsg = result.reason?.message || String(result.reason);
+      console.warn(`[Jackett] Indexer "${ix.title}" (${ix.id}) failed/timed out:`, errMsg);
       if (!firstError) {
-        firstError = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+        firstError = result.reason instanceof Error ? result.reason : new Error(errMsg);
       }
-      // Temporarily skip failing/hanging indexer only when multiple indexers exist
       if (targetIndexers.length > 1) {
-        indexerCooldownUntil.set(ix.id, Date.now() + DEAD_INDEXER_COOLDOWN_MS);
+        const cooldownMs = errMsg.includes('HTTP 400')
+          ? BLOCKED_INDEXER_COOLDOWN_MS
+          : DEAD_INDEXER_COOLDOWN_MS;
+        indexerCooldownUntil.set(ix.id, Date.now() + cooldownMs);
       }
     }
   }
+
+  const combined = mergeUniqueTorrents(fulfilledLists);
 
   if (successCount === 0 && firstError) {
     throw firstError;
