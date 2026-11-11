@@ -19,29 +19,70 @@ export async function GET(request: NextRequest) {
 
     const torrUrl = `${TORRSERVER_INTERNAL_URL}/stream/${encodeURIComponent(title)}?link=${link}&index=${index}&play`;
 
-    // Probe video codec with ffprobe (timeout 2.5s)
+    // 1. Probe video & audio streams with ffprobe (timeout 3.5s)
     let isH264 = true;
+    let videoStreamIndex = 'v:0';
+    let audioStreamIndex: string | null = null;
+
     try {
-      const probeCodec = await new Promise<string>((resolve) => {
+      const probeJson = await new Promise<any>((resolve) => {
         const proc = spawn('ffprobe', [
           '-v', 'error',
-          '-select_streams', 'v:0',
-          '-show_entries', 'stream=codec_name',
-          '-of', 'default=noprint_wrappers=1:nokey=1',
+          '-analyzeduration', '15000000',
+          '-probesize', '15000000',
+          '-show_streams',
+          '-of', 'json',
           torrUrl,
         ]);
         let out = '';
         proc.stdout.on('data', (d) => (out += d.toString()));
-        proc.on('close', () => resolve(out.trim().toLowerCase()));
-        proc.on('error', () => resolve(''));
+        proc.on('close', () => {
+          try {
+            resolve(JSON.parse(out));
+          } catch {
+            resolve(null);
+          }
+        });
+        proc.on('error', () => resolve(null));
         setTimeout(() => {
           try { proc.kill(); } catch {}
-          resolve('');
-        }, 2500);
+          resolve(null);
+        }, 3500);
       });
 
-      if (probeCodec && !probeCodec.includes('h264') && !probeCodec.includes('avc')) {
-        isH264 = false;
+      if (probeJson && Array.isArray(probeJson.streams)) {
+        const streams: any[] = probeJson.streams;
+        const vStream = streams.find((s) => s.codec_type === 'video');
+        if (vStream) {
+          videoStreamIndex = `0:${vStream.index}`;
+          const cName = (vStream.codec_name || '').toLowerCase();
+          if (!cName.includes('h264') && !cName.includes('avc')) {
+            isH264 = false;
+          }
+        }
+
+        const aStreams = streams.filter((s) => s.codec_type === 'audio');
+        if (aStreams.length > 0) {
+          // Priority 1: Russian audio track (LostFilm, Dub, MVO, rus)
+          const rusTrack = aStreams.find((s) => {
+            const lang = (s.tags?.language || '').toLowerCase();
+            const trackTitle = (s.tags?.title || '').toLowerCase();
+            return (
+              lang.includes('rus') ||
+              lang.includes('ru') ||
+              trackTitle.includes('rus') ||
+              trackTitle.includes('рус') ||
+              trackTitle.includes('дубл') ||
+              trackTitle.includes('lostfilm') ||
+              trackTitle.includes('кубик') ||
+              trackTitle.includes('mvo') ||
+              trackTitle.includes('dvo')
+            );
+          });
+
+          const chosenAudio = rusTrack || aStreams[0];
+          audioStreamIndex = `0:${chosenAudio.index}`;
+        }
       }
     } catch {
       // Fallback: check file extension in title or link
@@ -53,6 +94,8 @@ export async function GET(request: NextRequest) {
     const ffmpegArgs: string[] = [
       '-hide_banner',
       '-loglevel', 'warning',
+      '-analyzeduration', '25000000',
+      '-probesize', '25000000',
     ];
 
     const seekSeconds = parseFloat(startTime);
@@ -65,9 +108,15 @@ export async function GET(request: NextRequest) {
       '-reconnect_streamed', '1',
       '-reconnect_delay_max', '5',
       '-i', torrUrl,
-      '-map', '0:v:0',
-      '-map', '0:a:0?'
+      '-map', videoStreamIndex
     );
+
+    // Map audio: explicitly mapped if probed, or 0:a:0 fallback
+    if (audioStreamIndex) {
+      ffmpegArgs.push('-map', audioStreamIndex);
+    } else {
+      ffmpegArgs.push('-map', '0:a:0?');
+    }
 
     if (isH264) {
       // Direct stream copy for native H.264 video (0% CPU load)
@@ -86,6 +135,9 @@ export async function GET(request: NextRequest) {
       '-c:a', 'aac',
       '-b:a', '192k',
       '-ac', '2',
+      '-ar', '48000',
+      '-af', 'aresample=matrix_encoding=dplii,volume=1.4',
+      '-max_muxing_queue_size', '4096',
       '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
       '-f', 'mp4',
       'pipe:1'

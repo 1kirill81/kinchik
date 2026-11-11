@@ -124,7 +124,7 @@ export default function VideoPlayer({
         url: streamUrl,
         poster: poster || '',
         volume: 0.8,
-        isLive: isRemux,
+        isLive: false,
         muted: false,
         autoplay: true,
         pip: true,
