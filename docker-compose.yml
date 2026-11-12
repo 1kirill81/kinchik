@@ -36,10 +36,9 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
           memory: 2048M
         reservations:
-          memory: 512M
+          memory: 256M
     networks:
       - kino_net
 
@@ -65,7 +64,6 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
           memory: 2048M
     networks:
       - kino_net
@@ -95,7 +93,6 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.5'
           memory: 1024M
     networks:
       - kino_net
