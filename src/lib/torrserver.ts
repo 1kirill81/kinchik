@@ -1,5 +1,6 @@
 import { TorrServerFile, TorrServerLiveStats, TorrServerTorrent } from '@/types/torrent';
 import { formatBytes, formatSpeed } from './utils';
+import { fetchWithTimeout } from './http';
 
 const TORRSERVER_INTERNAL_URL = (process.env.TORRSERVER_URL || 'http://localhost:8090').replace(/\/+$/, '');
 const TORRSERVER_PUBLIC_URL = (process.env.NEXT_PUBLIC_TORRSERVER_URL || 'http://localhost:8090').replace(/\/+$/, '');
@@ -35,7 +36,7 @@ export const torrserver = {
    */
   async ping(): Promise<boolean> {
     try {
-      const res = await fetch(`${TORRSERVER_INTERNAL_URL}/echo`, { cache: 'no-store' });
+      const res = await fetchWithTimeout(`${TORRSERVER_INTERNAL_URL}/echo`, { cache: 'no-store' }, 3000);
       return res.ok;
     } catch {
       return false;
@@ -46,19 +47,23 @@ export const torrserver = {
    * Register a torrent (magnet or .torrent URL) in TorrServer
    */
   async addTorrent(link: string, title: string, poster?: string): Promise<TorrServerTorrent> {
-    const res = await fetch(`${TORRSERVER_INTERNAL_URL}/torrents`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'add',
-        link,
-        title,
-        poster: poster || '',
-        data: '',
-        save_to_db: true,
-      }),
-      cache: 'no-store',
-    });
+    const res = await fetchWithTimeout(
+      `${TORRSERVER_INTERNAL_URL}/torrents`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'add',
+          link,
+          title,
+          poster: poster || '',
+          data: '',
+          save_to_db: true,
+        }),
+        cache: 'no-store',
+      },
+      15000
+    );
 
     if (!res.ok) {
       throw new Error(`Failed to add torrent to TorrServer: ${res.statusText}`);
@@ -73,15 +78,19 @@ export const torrserver = {
    */
   async getTorrent(hash: string): Promise<TorrServerTorrent | null> {
     try {
-      const res = await fetch(`${TORRSERVER_INTERNAL_URL}/torrents`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'get',
-          hash,
-        }),
-        cache: 'no-store',
-      });
+      const res = await fetchWithTimeout(
+        `${TORRSERVER_INTERNAL_URL}/torrents`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'get',
+            hash,
+          }),
+          cache: 'no-store',
+        },
+        8000
+      );
 
       if (!res.ok) return null;
       const data: TorrServerTorrent = await res.json();

@@ -42,12 +42,32 @@ export interface FavoriteItem {
 const FAVORITES_KEY = 'kinostream_favorites_v1';
 const PROGRESS_KEY = 'kinostream_watch_progress_v1';
 
-// Custom event to sync components across the app
 export const STORAGE_CHANGE_EVENT = 'kinostream_storage_updated';
 
 function triggerStorageEvent() {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(STORAGE_CHANGE_EVENT));
+  }
+}
+
+async function fetchWithSingleRetry(
+  url: string,
+  options: RequestInit,
+  retries = 1
+): Promise<Response> {
+  try {
+    const res = await fetch(url, options);
+    if (!res.ok && retries > 0) {
+      await new Promise((r) => setTimeout(r, 600));
+      return fetch(url, options);
+    }
+    return res;
+  } catch (err) {
+    if (retries > 0) {
+      await new Promise((r) => setTimeout(r, 600));
+      return fetch(url, options);
+    }
+    throw err;
   }
 }
 
@@ -77,15 +97,22 @@ export const storage = {
     let isAdded = false;
     if (existingIndex >= 0) {
       list.splice(existingIndex, 1);
+      isAdded = false;
+
+      // Idempotent DELETE with 1 retry
+      fetchWithSingleRetry('/api/user/favorites', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.id, mediaType: item.mediaType }),
+      }).catch(() => {});
     } else {
-      // Check if we have progress saved for this item to attach
       const progress =
         this.getProgressByMediaId(item.id, item.mediaType) ||
         this.getAllProgress().find(
           (p) => p.title.toLowerCase().trim() === item.title.toLowerCase().trim()
         );
 
-      list.unshift({
+      const newItem: FavoriteItem = {
         ...item,
         addedAt: Date.now(),
         lastWatched: progress
@@ -102,20 +129,22 @@ export const storage = {
               updatedAt: progress.updatedAt,
             }
           : undefined,
-      });
+      };
+
+      list.unshift(newItem);
       isAdded = true;
+
+      // Idempotent PUT with 1 retry
+      fetchWithSingleRetry('/api/user/favorites', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newItem),
+      }).catch(() => {});
     }
 
     try {
       localStorage.setItem(FAVORITES_KEY, JSON.stringify(list));
       triggerStorageEvent();
-
-      // Background sync to server if user is authenticated
-      fetch('/api/user/favorites', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(item),
-      }).catch(() => {});
     } catch (e) {
       console.error('Failed to save favorites to localStorage:', e);
     }
@@ -163,7 +192,6 @@ export const storage = {
     if (typeof window === 'undefined') return;
 
     const list = this.getAllProgress();
-    // Unique key: mediaId if present, otherwise hash or title
     const matchIndex = list.findIndex((p) => {
       if (progress.mediaId && p.mediaId) {
         return p.mediaId === progress.mediaId && p.mediaType === progress.mediaType;
@@ -184,13 +212,11 @@ export const storage = {
       list.unshift({ ...progress, updatedAt: Date.now() });
     }
 
-    // Keep last 40 items
     const trimmed = list.slice(0, 40);
 
     try {
       localStorage.setItem(PROGRESS_KEY, JSON.stringify(trimmed));
 
-      // Also update favorite's lastWatched if this item is in favorites
       const favs = this.getFavorites();
       const favIndex = favs.findIndex((f) => {
         if (progress.mediaId && f.id === progress.mediaId && f.mediaType === progress.mediaType) {
@@ -217,8 +243,8 @@ export const storage = {
 
       triggerStorageEvent();
 
-      // Background sync to server if user is authenticated
-      fetch('/api/user/progress', {
+      // Background sync with 1 retry
+      fetchWithSingleRetry('/api/user/progress', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(progress),
@@ -239,6 +265,15 @@ export const storage = {
     } catch (e) {}
   },
 
+  clearUserData(): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.removeItem(FAVORITES_KEY);
+      localStorage.removeItem(PROGRESS_KEY);
+      triggerStorageEvent();
+    } catch {}
+  },
+
   async syncWithServer(): Promise<void> {
     if (typeof window === 'undefined') return;
     try {
@@ -249,14 +284,14 @@ export const storage = {
 
       if (favRes.ok) {
         const favData = await favRes.json();
-        if (favData.success && Array.isArray(favData.items) && favData.items.length > 0) {
+        if (favData.success && Array.isArray(favData.items)) {
           localStorage.setItem(FAVORITES_KEY, JSON.stringify(favData.items));
         }
       }
 
       if (progRes.ok) {
         const progData = await progRes.json();
-        if (progData.success && Array.isArray(progData.items) && progData.items.length > 0) {
+        if (progData.success && Array.isArray(progData.items)) {
           localStorage.setItem(PROGRESS_KEY, JSON.stringify(progData.items));
         }
       }

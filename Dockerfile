@@ -1,47 +1,52 @@
-FROM node:20-alpine AS base
-
-# Install dependencies only when needed
-FROM base AS deps
-RUN apk add --no-cache libc6-compat python3 make g++
+FROM node:20.19-bookworm-slim AS deps
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    make \
+    g++ \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Rebuild the source code only when needed
-FROM base AS builder
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20.19-bookworm-slim AS builder
 WORKDIR /app
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Disable Next.js telemetry during build
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production
+ENV JWT_SECRET="12345678901234567890123456789012"
+ENV TMDB_API_KEY="build_time_placeholder"
+ENV JACKETT_API_KEY="build_time_placeholder"
 
 RUN npm run build
 
-# Production image, copy all the files and run next
-FROM base AS runner
-RUN apk add --no-cache ffmpeg
+FROM node:20.19-bookworm-slim AS runner
 WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    curl \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
-
-RUN mkdir -p /app/data && chown -R nextjs:nodejs /app/data && chmod 777 /app/data
-
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./package.json
-
-USER nextjs
-
-EXPOSE 3000
-
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["npm", "start"]
+RUN mkdir -p /app/data && chown -R node:node /app
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+
+USER node
+
+EXPOSE 3000
+
+CMD ["node", "server.js"]

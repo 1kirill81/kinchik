@@ -1,4 +1,5 @@
 import { MediaDetails, MediaItem, TMDBResponse, TVSeasonDetails } from '@/types/tmdb';
+import { fetchWithRetry } from './http';
 
 const TMDB_BASE_URL = process.env.TMDB_BASE_URL || 'https://api.themoviedb.org/3';
 const TMDB_API_KEY = process.env.TMDB_API_KEY || '';
@@ -29,12 +30,15 @@ export const tmdb = {
 
     const url = `${TMDB_BASE_URL}${endpoint}?${queryParams.toString()}`;
 
-    const res = await fetch(url, {
-      next: { revalidate: 3600 }, // Cache for 1 hour
-      headers: {
-        'Content-Type': 'application/json',
+    const res = await fetchWithRetry(
+      url,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
       },
-    });
+      { maxRetries: 2, timeoutMs: 8000 }
+    );
 
     if (!res.ok) {
       throw new Error(`TMDB error ${res.status}: ${res.statusText} at ${endpoint}`);

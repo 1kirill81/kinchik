@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getDatabase } from '@/lib/db';
+import { getDatabase, upsertWatchProgress } from '@/lib/db';
 import { getAuthUser } from '@/lib/auth';
 import { WatchProgress } from '@/lib/storage';
 
@@ -45,98 +45,68 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const p: WatchProgress = await request.json();
-    const db = getDatabase();
-    const now = Date.now();
+    const p: Partial<WatchProgress> = await request.json().catch(() => ({}));
 
-    const existing = db
-      .prepare('SELECT id FROM watch_progress WHERE user_id = ? AND hash = ? AND file_index = ?')
-      .get(user.userId, p.hash, p.fileIndex) as { id: number } | undefined;
+    // Strict validation
+    if (!p.title || typeof p.title !== 'string' || p.title.trim().length === 0) {
+      return NextResponse.json({ success: false, error: 'Valid title is required' }, { status: 400 });
+    }
 
-    if (existing) {
-      db.prepare(
-        `UPDATE watch_progress SET
-          media_id = ?,
-          media_type = ?,
-          title = ?,
-          poster = ?,
-          stream_url = ?,
-          season = ?,
-          episode = ?,
-          episode_title = ?,
-          current_time = ?,
-          duration = ?,
-          progress_percent = ?,
-          updated_at = ?
-        WHERE id = ?`
-      ).run(
-        p.mediaId || null,
-        p.mediaType,
-        p.title,
-        p.poster || null,
-        p.streamUrl,
-        p.season || null,
-        p.episode || null,
-        p.episodeTitle || null,
-        p.currentTime,
-        p.duration,
-        p.progressPercent,
-        now,
-        existing.id
-      );
-    } else {
-      db.prepare(
-        `INSERT INTO watch_progress (
-          user_id, media_id, media_type, title, poster, hash, file_index, stream_url, season, episode, episode_title, current_time, duration, progress_percent, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).run(
-        user.userId,
-        p.mediaId || null,
-        p.mediaType,
-        p.title,
-        p.poster || null,
-        p.hash,
-        p.fileIndex,
-        p.streamUrl,
-        p.season || null,
-        p.episode || null,
-        p.episodeTitle || null,
-        p.currentTime,
-        p.duration,
-        p.progressPercent,
-        now
+    if (!p.hash || typeof p.hash !== 'string' || p.hash.trim().length === 0) {
+      return NextResponse.json({ success: false, error: 'Valid hash is required' }, { status: 400 });
+    }
+
+    if (p.mediaType !== 'movie' && p.mediaType !== 'tv') {
+      return NextResponse.json({ success: false, error: 'mediaType must be movie or tv' }, { status: 400 });
+    }
+
+    const fileIndex = Number(p.fileIndex);
+    if (!Number.isInteger(fileIndex) || fileIndex < 0) {
+      return NextResponse.json({ success: false, error: 'fileIndex must be a non-negative integer' }, { status: 400 });
+    }
+
+    const currentTime = Number(p.currentTime);
+    const duration = Number(p.duration);
+    const progressPercent = Number(p.progressPercent);
+
+    if (
+      !Number.isFinite(currentTime) ||
+      !Number.isFinite(duration) ||
+      !Number.isFinite(progressPercent) ||
+      isNaN(currentTime) ||
+      isNaN(duration) ||
+      isNaN(progressPercent) ||
+      currentTime < 0 ||
+      duration < 0 ||
+      progressPercent < 0 ||
+      progressPercent > 100
+    ) {
+      return NextResponse.json(
+        { success: false, error: 'currentTime, duration, and progressPercent must be valid finite numbers' },
+        { status: 400 }
       );
     }
 
-    // Also update favorite's last_watched if exists
-    if (p.mediaId) {
-      const fav = db
-        .prepare('SELECT id FROM favorites WHERE user_id = ? AND media_id = ? AND media_type = ?')
-        .get(user.userId, p.mediaId, p.mediaType) as { id: number } | undefined;
-
-      if (fav) {
-        const lastWatchedJson = JSON.stringify({
-          season: p.season,
-          episode: p.episode,
-          episodeTitle: p.episodeTitle,
-          fileIndex: p.fileIndex,
-          hash: p.hash,
-          streamUrl: p.streamUrl,
-          currentTime: p.currentTime,
-          duration: p.duration,
-          progressPercent: p.progressPercent,
-          updatedAt: now,
-        });
-
-        db.prepare('UPDATE favorites SET last_watched_json = ? WHERE id = ?').run(
-          lastWatchedJson,
-          fav.id
-        );
-      }
-    }
+    upsertWatchProgress({
+      userId: user.userId,
+      mediaId: p.mediaId ? Number(p.mediaId) : null,
+      mediaType: p.mediaType,
+      title: p.title.trim(),
+      poster: p.poster || null,
+      hash: p.hash.trim(),
+      fileIndex,
+      streamUrl: p.streamUrl || '',
+      season: p.season ? Number(p.season) : null,
+      episode: p.episode ? Number(p.episode) : null,
+      episodeTitle: p.episodeTitle || null,
+      currentTime,
+      duration,
+      progressPercent: Math.round(progressPercent),
+    });
 
     return NextResponse.json({ success: true });
-  } catch (err: any) {
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+  } catch (error: any) {
+    console.error('Error saving watch progress:', error);
+    return NextResponse.json({ success: false, error: 'Failed to save progress' }, { status: 500 });
   }
 }

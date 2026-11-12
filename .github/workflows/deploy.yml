@@ -5,11 +5,15 @@ on:
     branches:
       - main
       - master
-  workflow_dispatch: # Позволяет запускать деплой вручную из вкладки Actions в GitHub
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 jobs:
-  build-and-test:
-    name: Build & Type Check
+  verify:
+    name: Verify & Build Gate
     runs-on: ubuntu-latest
 
     steps:
@@ -26,19 +30,29 @@ jobs:
         run: npm ci
 
       - name: TypeScript Type Check
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
-      - name: Test Production Build
+      - name: ESLint Flat Config Check
+        run: npm run lint
+
+      - name: Vitest Suite
+        run: npm test
+
+      - name: Production Dependency Audit
+        run: npm run audit:prod
+
+      - name: Production Build
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
+          NODE_ENV: production
+          JWT_SECRET: ${{ secrets.JWT_SECRET || '12345678901234567890123456789012' }}
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY || 'dummy_test_key' }}
           JACKETT_API_KEY: ${{ secrets.JACKETT_API_KEY || 'dummy_test_key' }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET || 'dummy_jwt_secret_test' }}
 
   deploy:
-    name: Deploy to Production Server
-    needs: build-and-test
+    name: Deploy to VPS
+    needs: verify
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
 
@@ -54,7 +68,6 @@ jobs:
             set -e
             echo "🚀 Начинаем деплой Kinostream на сервере..."
 
-            # Директория проекта на сервере
             TARGET_DIR="/opt/kino2/kinchik"
             if [ ! -d "$TARGET_DIR" ]; then
               TARGET_DIR="/opt/kino2"
@@ -72,13 +85,25 @@ jobs:
             docker rm -f kino2_web $(docker ps -aq --filter "name=_kino2_web") 2>/dev/null || true
             docker compose up -d --build --remove-orphans
 
+            echo "⏳ Ожидание старта сервисов и прогрева healthcheck..."
+            HEALTHY=0
+            for i in $(seq 1 12); do
+              if curl -s -f http://127.0.0.1:3000/api/health | grep -q '"status":"healthy"'; then
+                echo "✅ Healthcheck подтвержден (попытка $i)!"
+                HEALTHY=1
+                break
+              fi
+              echo "Ожидание контейнера web... ($i/12)"
+              sleep 3
+            done
+
+            if [ "$HEALTHY" -ne 1 ]; then
+              echo "❌ Healthcheck провален! Проверяем логи контейнера web:"
+              docker logs --tail 50 kino2_web || true
+              exit 1
+            fi
+
             echo "🧹 Очистка старых неиспользуемых Docker слоев..."
             docker image prune -f
 
-            echo "⏳ Ожидание старта сервисов (10 сек)..."
-            sleep 10
-
-            echo "🔍 Проверка доступности сайта..."
-            curl -f http://localhost:3000 || echo "⚠️ Предупреждение: локальный healthcheck вернул ошибку"
-
-            echo "✅ Деплой успешно завершен!"
+            echo "🎉 Деплой успешно завершен и проверен healthcheck-ом!"

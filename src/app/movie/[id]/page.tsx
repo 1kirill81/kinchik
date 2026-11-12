@@ -7,11 +7,12 @@ import MovieDetailClient from './MovieDetailClient';
 export const dynamic = 'force-dynamic';
 
 interface MoviePageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function generateMetadata({ params }: MoviePageProps): Promise<Metadata> {
-  const movie = await tmdb.getDetails(params.id, 'movie');
+  const { id } = await params;
+  const movie = await tmdb.getDetails(id, 'movie');
   if (!movie) return { title: 'Фильм не найден' };
 
   return {
@@ -21,7 +22,8 @@ export async function generateMetadata({ params }: MoviePageProps): Promise<Meta
 }
 
 export default async function MoviePage({ params }: MoviePageProps) {
-  const movie = await tmdb.getDetails(params.id, 'movie');
+  const { id } = await params;
+  const movie = await tmdb.getDetails(id, 'movie');
 
   if (!movie) {
     notFound();

@@ -3,10 +3,10 @@ import { tmdb } from '@/lib/tmdb';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { type: string; id: string } }
+  { params }: { params: Promise<{ type: string; id: string }> }
 ) {
   try {
-    const { type, id } = params;
+    const { type, id } = await params;
 
     if (type !== 'movie' && type !== 'tv') {
       return NextResponse.json({ success: false, error: 'Invalid media type' }, { status: 400 });

@@ -3,6 +3,8 @@ import { AudioTrackInfo, MediaProbeInfo } from '@/types/torrent';
 
 const TORRSERVER_INTERNAL_URL = (process.env.TORRSERVER_URL || 'http://localhost:8090').replace(/\/+$/, '');
 const CACHE_TTL_MS = 30 * 60 * 1000;
+const MAX_PROBE_CACHE_SIZE = 200;
+const MAX_STDOUT_BYTES = 2 * 1024 * 1024; // 2 MB limit
 
 interface CacheEntry {
   data: MediaProbeInfo;
@@ -11,6 +13,21 @@ interface CacheEntry {
 
 const probeCache = new Map<string, CacheEntry>();
 const inflightProbes = new Map<string, Promise<MediaProbeInfo>>();
+
+// Periodic cache cleanup
+if (typeof setInterval !== 'undefined') {
+  const probeCleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of probeCache.entries()) {
+      if (value.expiresAt <= now) {
+        probeCache.delete(key);
+      }
+    }
+  }, 120000);
+  if (probeCleanupTimer.unref) {
+    probeCleanupTimer.unref();
+  }
+}
 
 const LANGUAGE_MAP: Record<string, string> = {
   rus: 'Русский',
@@ -44,7 +61,6 @@ const LANGUAGE_MAP: Record<string, string> = {
 
 function parseDurationTag(raw?: string): number {
   if (!raw) return 0;
-  // Format: HH:MM:SS.fffffffff
   const match = raw.match(/^(\d+):(\d{2}):(\d{2})(?:\.(\d+))?/);
   if (!match) return 0;
   const hours = parseInt(match[1], 10);
@@ -67,7 +83,6 @@ function extractDuration(probeJson: any): number {
     }
   }
 
-  // Fallback for Matroska / MKV files storing duration inside stream tags
   for (const s of streams) {
     if (!s?.tags) continue;
     for (const [k, v] of Object.entries(s.tags)) {
@@ -81,10 +96,17 @@ function extractDuration(probeJson: any): number {
   return 0;
 }
 
-function formatAudioLabel(langRaw: string, titleRaw: string, audioOrder: number, codec: string, channels: number): string {
+function formatAudioLabel(
+  langRaw: string,
+  titleRaw: string,
+  audioOrder: number,
+  codec: string,
+  channels: number
+): string {
   const langLower = langRaw.toLowerCase().trim();
   const titleClean = titleRaw.trim();
-  const langName = LANGUAGE_MAP[langLower] || (langLower && langLower !== 'und' ? langRaw.toUpperCase() : '');
+  const langName =
+    LANGUAGE_MAP[langLower] || (langLower && langLower !== 'und' ? langRaw.toUpperCase() : '');
 
   let mainPart = '';
   if (langName && titleClean) {
@@ -97,7 +119,8 @@ function formatAudioLabel(langRaw: string, titleRaw: string, audioOrder: number,
     mainPart = `Дорожка ${audioOrder + 1}`;
   }
 
-  const chLabel = channels === 6 ? '5.1' : channels === 8 ? '7.1' : channels === 2 ? '2.0' : channels ? `${channels}ch` : '';
+  const chLabel =
+    channels === 6 ? '5.1' : channels === 8 ? '7.1' : channels === 2 ? '2.0' : channels ? `${channels}ch` : '';
   const metaParts = [codec ? codec.toUpperCase() : '', chLabel].filter(Boolean).join(' ');
 
   return metaParts ? `${mainPart} (${metaParts})` : mainPart;
@@ -147,16 +170,44 @@ async function runFfprobe(torrUrl: string, timeoutMs: number): Promise<MediaProb
         '-show_streams',
         '-of', 'json',
         torrUrl,
-      ]);
+      ], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+
       let out = '';
+      let bytesRead = 0;
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
       const finish = (val: any) => {
         if (settled) return;
         settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
         resolve(val);
       };
 
-      proc.stdout.on('data', (d) => (out += d.toString()));
+      timer = setTimeout(() => {
+        try {
+          proc.kill('SIGKILL');
+        } catch {}
+        finish(null);
+      }, timeoutMs);
+
+      proc.stdout.on('data', (d: Buffer) => {
+        bytesRead += d.length;
+        if (bytesRead > MAX_STDOUT_BYTES) {
+          try {
+            proc.kill('SIGKILL');
+          } catch {}
+          finish(null);
+          return;
+        }
+        out += d.toString('utf8');
+      });
+
       proc.on('close', () => {
         try {
           finish(JSON.parse(out));
@@ -164,13 +215,8 @@ async function runFfprobe(torrUrl: string, timeoutMs: number): Promise<MediaProb
           finish(null);
         }
       });
+
       proc.on('error', () => finish(null));
-      setTimeout(() => {
-        try {
-          proc.kill('SIGKILL');
-        } catch {}
-        finish(null);
-      }, timeoutMs);
     });
 
     if (!probeJson || !Array.isArray(probeJson.streams)) {
@@ -225,7 +271,7 @@ async function runFfprobe(torrUrl: string, timeoutMs: number): Promise<MediaProb
 }
 
 /**
- * Probe torrent media file metadata (duration, codecs, audio tracks) with deduplication & caching
+ * Probe torrent media file metadata (duration, codecs, audio tracks) with deduplication & bounded LRU caching
  */
 export async function probeTorrentMedia(
   hash: string,
@@ -248,17 +294,28 @@ export async function probeTorrentMedia(
 
   const torrUrl = `${TORRSERVER_INTERNAL_URL}/stream/${encodeURIComponent(title)}?link=${hash}&index=${fileIndex}&play`;
 
-  const promise = runFfprobe(torrUrl, timeoutMs).then((info) => {
-    inflightProbes.delete(key);
-    // Cache valid probe metadata so seeking and remux switching are instantaneous
-    if (info.duration > 0 || info.audioTracks.length > 0 || info.videoStreamIndex !== null) {
-      probeCache.set(key, {
-        data: info,
-        expiresAt: Date.now() + CACHE_TTL_MS,
-      });
+  const promise = (async () => {
+    try {
+      const info = await runFfprobe(torrUrl, timeoutMs);
+
+      if (info.duration > 0 || info.audioTracks.length > 0 || info.videoStreamIndex !== null) {
+        // Enforce maximum LRU cache size
+        if (probeCache.size >= MAX_PROBE_CACHE_SIZE) {
+          const oldestKey = probeCache.keys().next().value;
+          if (oldestKey) probeCache.delete(oldestKey);
+        }
+
+        probeCache.set(key, {
+          data: info,
+          expiresAt: Date.now() + CACHE_TTL_MS,
+        });
+      }
+
+      return info;
+    } finally {
+      inflightProbes.delete(key);
     }
-    return info;
-  });
+  })();
 
   inflightProbes.set(key, promise);
   return promise;

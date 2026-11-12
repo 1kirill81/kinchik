@@ -341,15 +341,24 @@ export default function VideoPlayer({
   const [isBuffering, setIsBuffering] = useState(true);
   const [playerError, setPlayerError] = useState<string | null>(null);
 
-  // Poll TorrServer live stats
+  // Poll TorrServer live stats with overlapping request protection
   useEffect(() => {
     if (!hash) return;
 
     let isMounted = true;
+    let activeController: AbortController | null = null;
+    let isFetching = false;
 
     const fetchStats = async () => {
+      if (isFetching || !isMounted) return;
+      isFetching = true;
+      activeController = new AbortController();
+
       try {
-        const res = await fetch(`/api/stream/stats?hash=${encodeURIComponent(hash)}`);
+        const res = await fetch(`/api/stream/stats?hash=${encodeURIComponent(hash)}`, {
+          signal: activeController.signal,
+          cache: 'no-store',
+        });
         if (!res.ok) return;
         const data = await res.json();
         if (data.success && isMounted) {
@@ -359,7 +368,10 @@ export default function VideoPlayer({
           }
         }
       } catch (err: any) {
-        // Stats polling is optional, ignore transient errors
+        // Stats polling is optional, ignore transient or abort errors
+      } finally {
+        isFetching = false;
+        activeController = null;
       }
     };
 
@@ -368,6 +380,9 @@ export default function VideoPlayer({
 
     return () => {
       isMounted = false;
+      if (activeController) {
+        activeController.abort();
+      }
       clearInterval(interval);
     };
   }, [hash]);
@@ -447,119 +462,6 @@ export default function VideoPlayer({
         },
       };
 
-      // In Remux mode, fragmented MP4 over HTTP pipe has no duration header;
-      // proxy the <video> element to expose full episode duration & server-side -ss seeking.
-      if (isRemux) {
-        artOptions.proxy = function () {
-          const video = document.createElement('video');
-          video.playsInline = true;
-          const track = document.createElement('track');
-          track.default = true;
-          track.kind = 'metadata';
-          track.src = '';
-          video.appendChild(track);
-
-          const nativeDurationDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
-          const nativeCurrentTimeDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
-          const nativeBufferedDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'buffered');
-
-          Object.defineProperty(video, 'duration', {
-            configurable: true,
-            get() {
-              if (remuxDurationRef.current > 0) {
-                return remuxDurationRef.current;
-              }
-              // Never show gradually ticking fragment duration in Remux mode before probe finishes
-              return 0;
-            },
-          });
-
-          Object.defineProperty(video, 'currentTime', {
-            configurable: true,
-            get() {
-              if (pendingRemuxSeekRef.current !== null) {
-                return pendingRemuxSeekRef.current;
-              }
-              const nativeTime = nativeCurrentTimeDesc?.get?.call(this) || 0;
-              return remuxOffsetRef.current + nativeTime;
-            },
-            set(val: number) {
-              const maxDur = remuxDurationRef.current || Infinity;
-              const target = Math.max(0, Math.min(val, maxDur));
-              const offset = remuxOffsetRef.current;
-              const buf = nativeBufferedDesc?.get?.call(this);
-              let maxNativeBuf = 0;
-              if (buf && buf.length > 0) {
-                maxNativeBuf = buf.end(buf.length - 1);
-              }
-
-              // Fast native seek if target is already inside current buffered chunk
-              if (target >= offset && target <= offset + maxNativeBuf - 0.5) {
-                hasSeekedRef.current = true;
-                pendingRemuxSeekRef.current = null;
-                if (seekTimerRef.current) {
-                  clearTimeout(seekTimerRef.current);
-                  seekTimerRef.current = null;
-                }
-                nativeCurrentTimeDesc?.set?.call(this, target - offset);
-                return;
-              }
-
-              // Debounced server-side FFmpeg seek (-ss)
-              hasSeekedRef.current = true;
-              pendingRemuxSeekRef.current = target;
-              if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
-              seekTimerRef.current = setTimeout(() => {
-                const finalTarget = Math.floor(target);
-                pendingRemuxSeekRef.current = null;
-                remuxOffsetRef.current = finalTarget;
-                setIsBuffering(true);
-
-                try {
-                  const u = new URL(streamUrlRef.current, window.location.origin);
-                  u.searchParams.set('startTime', finalTarget.toString());
-                  video.src = u.pathname + u.search;
-                  video.load();
-                  video.play().catch(() => {});
-
-                  // Resync active subtitle timestamps to match the new Remux start offset
-                  const art = playerInstance.current;
-                  const activeTrack =
-                    subtitleTracksRef.current.find((t) => t.id === activeSubtitleIdRef.current) ||
-                    null;
-                  if (art && activeTrack) {
-                    applySubtitleToArt(art, activeTrack, true);
-                  }
-                } catch (err) {
-                  console.error('Remux seek error:', err);
-                }
-              }, 350);
-            },
-          });
-
-          Object.defineProperty(video, 'buffered', {
-            configurable: true,
-            get() {
-              const rawBuf = nativeBufferedDesc?.get?.call(this);
-              const offset = remuxOffsetRef.current;
-              return {
-                get length() {
-                  return rawBuf ? rawBuf.length : 0;
-                },
-                start(i: number) {
-                  return (rawBuf ? rawBuf.start(i) : 0) + offset;
-                },
-                end(i: number) {
-                  return (rawBuf ? rawBuf.end(i) : 0) + offset;
-                },
-              };
-            },
-          });
-
-          return video;
-        };
-      }
-
       // Configure subtitle renderer cleanly; actual track loading runs right after mount
       artOptions.subtitle = {
         url: '',
@@ -578,13 +480,100 @@ export default function VideoPlayer({
       appliedSubtitleKeyRef.current = '';
       const art = new Artplayer(artOptions);
 
-      // Keep Artplayer's $track bound to the proxied <video>'s live <track> in Remux mode
+      // In Remux mode, override duration & currentTime getters on art and $video so that
+      // the scrubber shows the full episode duration and seeks via server-side -ss
       if (isRemux) {
-        const videoEl = art.template.$video as HTMLVideoElement | undefined;
-        const innerTrack = videoEl?.querySelector('track') as HTMLTrackElement | null;
-        if (innerTrack) {
-          (art.template as any).$track = innerTrack;
+        const video = art.template.$video;
+
+        const performRemuxSeek = (targetSec: number) => {
+          const maxDur = remuxDurationRef.current || Infinity;
+          const target = Math.max(0, Math.min(targetSec, maxDur));
+          const offset = remuxOffsetRef.current || 0;
+
+          const buf = video?.buffered;
+          let maxNativeBuf = 0;
+          if (buf && buf.length > 0) {
+            maxNativeBuf = buf.end(buf.length - 1);
+          }
+
+          // Fast native seek if target is within already buffered segment
+          if (target >= offset && target <= offset + maxNativeBuf - 0.5) {
+            hasSeekedRef.current = true;
+            pendingRemuxSeekRef.current = null;
+            if (seekTimerRef.current) {
+              clearTimeout(seekTimerRef.current);
+              seekTimerRef.current = null;
+            }
+            if (video) {
+              video.currentTime = target - offset;
+            }
+            return;
+          }
+
+          // Debounced server-side FFmpeg seek (-ss)
+          hasSeekedRef.current = true;
+          pendingRemuxSeekRef.current = target;
+          if (seekTimerRef.current) clearTimeout(seekTimerRef.current);
+          seekTimerRef.current = setTimeout(() => {
+            const finalTarget = Math.floor(target);
+            pendingRemuxSeekRef.current = null;
+            remuxOffsetRef.current = finalTarget;
+            setIsBuffering(true);
+
+            try {
+              const u = new URL(streamUrlRef.current, window.location.origin);
+              u.searchParams.set('startTime', finalTarget.toString());
+              if (video) {
+                video.src = u.pathname + u.search;
+                video.load();
+                video.play().catch(() => {});
+              }
+
+              const activeTrack =
+                subtitleTracksRef.current.find((t) => t.id === activeSubtitleIdRef.current) ||
+                null;
+              if (activeTrack) {
+                applySubtitleToArt(art, activeTrack, true);
+              }
+            } catch (err) {
+              console.error('Remux seek error:', err);
+            }
+          }, 350);
+        };
+
+        Object.defineProperty(art, 'duration', {
+          configurable: true,
+          get() {
+            return remuxDurationRef.current > 0 ? remuxDurationRef.current : (video?.duration || 0);
+          },
+        });
+
+        if (video) {
+          Object.defineProperty(video, 'duration', {
+            configurable: true,
+            get() {
+              return remuxDurationRef.current > 0 ? remuxDurationRef.current : 0;
+            },
+          });
         }
+
+        Object.defineProperty(art, 'currentTime', {
+          configurable: true,
+          get() {
+            if (pendingRemuxSeekRef.current !== null) {
+              return pendingRemuxSeekRef.current;
+            }
+            const nativeTime = video?.currentTime || 0;
+            return (remuxOffsetRef.current || 0) + nativeTime;
+          },
+          set(val: number) {
+            performRemuxSeek(val);
+          },
+        });
+
+        art.on('seek', (targetSec: number) => {
+          performRemuxSeek(targetSec);
+        });
       }
 
       const initialSubTrack =

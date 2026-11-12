@@ -75,28 +75,6 @@ export default function TorrentModal({
   const [preparingTitle, setPreparingTitle] = useState<string>('');
   const [prepareStep, setPrepareStep] = useState<string>('');
 
-  const handleSearchGeneral = () => {
-    const base = mediaTitle || originalTitle || '';
-    setQuery(base);
-    fetchTorrents(base, originalTitle);
-  };
-
-  const handleSearchEnglish = () => {
-    if (originalTitle) {
-      setQuery(originalTitle);
-      fetchTorrents(originalTitle);
-    }
-  };
-
-  // Initial load: automatically query both localized title and originalTitle when available
-  useEffect(() => {
-    if (isOpen) {
-      const defaultQuery = mediaTitle || originalTitle || '';
-      setQuery(defaultQuery);
-      fetchTorrents(defaultQuery, originalTitle);
-    }
-  }, [isOpen, mediaTitle, originalTitle, season, episode]);
-
   const fetchTorrents = async (searchQuery: string, altSearchQuery?: string) => {
     if (!searchQuery.trim()) return;
     setIsLoading(true);
@@ -132,6 +110,28 @@ export default function TorrentModal({
       setIsLoading(false);
     }
   };
+
+  const handleSearchGeneral = () => {
+    const base = mediaTitle || originalTitle || '';
+    setQuery(base);
+    fetchTorrents(base, originalTitle);
+  };
+
+  const handleSearchEnglish = () => {
+    if (originalTitle) {
+      setQuery(originalTitle);
+      fetchTorrents(originalTitle);
+    }
+  };
+
+  // Initial load: automatically query both localized title and originalTitle when available
+  useEffect(() => {
+    if (isOpen) {
+      const defaultQuery = mediaTitle || originalTitle || '';
+      setQuery(defaultQuery);
+      fetchTorrents(defaultQuery, originalTitle);
+    }
+  }, [isOpen, mediaTitle, originalTitle, season, episode]);
 
   const handleStartStream = async (torrent: TorrentItem) => {
     setIsPreparing(true);

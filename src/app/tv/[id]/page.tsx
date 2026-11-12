@@ -7,11 +7,12 @@ import TVDetailClient from './TVDetailClient';
 export const dynamic = 'force-dynamic';
 
 interface TVPageProps {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }
 
 export async function generateMetadata({ params }: TVPageProps): Promise<Metadata> {
-  const tv = await tmdb.getDetails(params.id, 'tv');
+  const { id } = await params;
+  const tv = await tmdb.getDetails(id, 'tv');
   if (!tv) return { title: 'Сериал не найден' };
 
   return {
@@ -21,7 +22,8 @@ export async function generateMetadata({ params }: TVPageProps): Promise<Metadat
 }
 
 export default async function TVPage({ params }: TVPageProps) {
-  const tv = await tmdb.getDetails(params.id, 'tv');
+  const { id } = await params;
+  const tv = await tmdb.getDetails(id, 'tv');
 
   if (!tv) {
     notFound();

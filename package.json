@@ -2,36 +2,45 @@
   "name": "kino2-torrstream",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20.9"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint .",
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "vitest run",
+    "audit:prod": "npm audit --omit=dev --audit-level=high"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/better-sqlite3": "^9.6.0",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/jsonwebtoken": "^9.0.10",
     "artplayer": "^5.1.7",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^11.10.0",
     "clsx": "^2.1.1",
-    "fast-xml-parser": "^4.5.0",
+    "fast-xml-parser": "^5.12.0",
     "hls.js": "^1.5.17",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.453.0",
-    "next": "^14.2.15",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "next": "^16.4.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "tailwind-merge": "^2.5.4"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
-    "@types/react": "^18.3.11",
-    "@types/react-dom": "^18.3.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "autoprefixer": "^10.4.20",
+    "eslint": "^9.20.0",
+    "eslint-config-next": "^16.4.6",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^3.0.0"
   }
 }

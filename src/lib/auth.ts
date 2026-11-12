@@ -2,12 +2,29 @@ import { NextRequest } from 'next/server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'kinostream_jwt_secret_dev_key_super_secure';
 export const AUTH_COOKIE_NAME = 'kinostream_token';
+
+export const AUTH_COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: 'lax' as const,
+  secure: process.env.NODE_ENV === 'production',
+  maxAge: 30 * 24 * 60 * 60, // 30 days
+  path: '/',
+};
 
 export interface AuthUser {
   userId: number;
   username: string;
+}
+
+export function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.trim().length < 32) {
+    throw new Error(
+      'JWT_SECRET environment variable is missing or shorter than 32 characters. Please configure a secure JWT_SECRET of at least 32 characters in .env.'
+    );
+  }
+  return secret.trim();
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -20,12 +37,14 @@ export async function comparePassword(password: string, hash: string): Promise<b
 }
 
 export function signToken(payload: AuthUser): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+  const secret = getJwtSecret();
+  return jwt.sign(payload, secret, { expiresIn: '30d' });
 }
 
 export function verifyToken(token: string): AuthUser | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as AuthUser;
+    const secret = getJwtSecret();
+    const decoded = jwt.verify(token, secret) as AuthUser;
     return decoded;
   } catch {
     return null;

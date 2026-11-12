@@ -3,10 +3,10 @@ import { tmdb } from '@/lib/tmdb';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string; season: string } }
+  { params }: { params: Promise<{ id: string; season: string }> }
 ) {
   try {
-    const { id, season } = params;
+    const { id, season } = await params;
     const seasonNumber = parseInt(season, 10);
 
     const seasonDetails = await tmdb.getSeasonDetails(id, seasonNumber);
