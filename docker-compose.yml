@@ -72,7 +72,6 @@ services:
     image: lscr.io/linuxserver/jackett:version-v0.24.3053
     container_name: kino2_jackett
     restart: unless-stopped
-    init: true
     stop_grace_period: 30s
     environment:
       - PUID=1000
